@@ -1,0 +1,2 @@
+# Keep Windows launcher line endings while checking actual whitespace mistakes.
+*.bat -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="vi">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>TradePilot · Futures Lab</title><link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script></head>
+<body>
+<main id="overview">
+  <header><strong>Bot Futures — chạy thử</strong><a href="/static/huong-dan.html" target="_blank" rel="noopener">Hướng dẫn sử dụng</a></header>
+  <section class="page-heading"><div><h1>Quản lý bot</h1><p class="subtitle">Kiểm tra cài đặt bên dưới, sau đó bấm Chạy mô phỏng.</p></div><div class="actions"><button id="stop" class="button danger" disabled>Dừng & đóng vị thế</button><button id="start" class="button primary">Chạy mô phỏng</button></div></section>
+  <div class="notice"><p><strong>Đang dùng tiền và giá giả lập.</strong> Chưa kết nối Binance. Kết quả này không chứng minh khả năng sinh lời ngoài thị trường.</p><span class="notice-tag">ISOLATED <b id="leverage-tag">5</b>X</span></div>
+  <div id="error" role="alert" class="error" hidden></div>
+  <section class="metrics" aria-label="Tổng quan tài sản">
+    <article class="metric"><div class="metric-label">Tài sản ước tính sau đóng lệnh </div><h2><span id="equity">500.00</span> <small>USDT</small></h2><p><span id="pnl" class="neutral">+0.00 USDT</span><span>từ đầu phiên</span></p></article>
+    <article class="metric"><div class="metric-label">Mục tiêu tài sản </div><h2><span id="target">1,000.00</span> <small>USDT</small></h2><p><span id="progress-text">0.0%</span><span>tiến độ mục tiêu</span></p><progress id="progress" value="0" max="100" aria-label="Tiến độ mục tiêu"></progress></article>
+    <article class="metric"><div class="metric-label">Ngưỡng dừng do lỗ </div><h2><span id="floor">200.00</span> <small>USDT</small></h2><p><span class="orange" id="max-loss">−300.00 USDT</span><span>so với vốn đầu</span></p></article>
+    <article class="metric"><div class="metric-label">Vị thế đang mở </div><h2><span id="position-count">0</span> <small id="position-limit">/ 2 cặp</small></h2><p><span id="used-margin">0.00 USDT</span><span>ký quỹ sử dụng</span></p></article>
+  </section>
+  <div class="work-grid">
+    <section class="panel chart-panel"><div class="panel-heading"><div><h3>2. Theo dõi kết quả</h3><p>Đã ước tính phí đóng lệnh và trượt giá</p></div><span id="status" class="tag">Chưa bắt đầu</span></div>
+      <div class="chart-top"><span id="chart-equity">500.00 <small>USDT</small></span><span class="legend"><i></i>Tài sản của bot</span></div>
+      <svg id="chart" viewBox="0 0 700 225" role="img" aria-label="Biểu đồ tài sản mô phỏng"></svg>
+      <div class="chart-footer"><span id="tick-label">Chưa có dữ liệu phiên</span><span>1 nhịp = 1 phút giả lập · mỗi 2 giây</span></div>
+      <div class="strategy"><div><strong>Quy tắc vào lệnh mẫu</strong><p>Bot theo dõi trung bình giá để chọn Long (kỳ vọng tăng) hoặc Short (kỳ vọng giảm).</p></div><span class="tag">TỰ ĐỘNG</span></div>
+      <p class="micro" id="reason">Bot chỉ bắt đầu sau khi bạn chọn Chạy mô phỏng.</p>
+    </section>
+    <section class="panel config-panel" id="configuration"><div class="panel-heading"><div><h3>1. Cài đặt phiên chạy</h3><p>Một phiên là một lần chạy bot với số vốn riêng.</p></div></div>
+      <form id="config-form">
+        <div class="form-row"><label>Vốn ban đầu (USDT)<input name="capital" type="number" min="0.01" step="any" value="500" required></label><label>Mục tiêu tổng (USDT)<input name="target" type="number" min="0.01" step="any" value="1000" required></label></div>
+        <label>Lỗ tối đa cho phép (USDT)<input name="max_loss" type="number" min="0.01" step="any" value="300" required></label>
+        <label>Cặp được phép giao dịch<input name="symbols" value="BTCUSDT, ETHUSDT" required spellcheck="false"></label>
+        <div class="form-row"><label>Đòn bẩy (x)<input name="leverage" type="number" min="1" max="20" step="1" value="5" required></label><label>Ký quỹ mỗi lệnh (USDT)<input name="order_budget" type="number" min="0.01" step="any" value="50" required></label></div>
+        <div class="form-row"><label>Cắt lỗ (% giá)<input name="stop_loss_pct" type="number" min="0.01" max="50" step="any" value="2" required></label><label>Chốt lời (% giá)<input name="take_profit_pct" type="number" min="0.01" max="100" step="any" value="4" required></label></div>
+        <details><summary>Chi phí mô phỏng</summary><div class="form-row"><label>Phí mỗi chiều (bps)<input name="fee_bps" type="number" min="0" max="100" step="any" value="5" required></label><label>Trượt giá (bps)<input name="slippage_bps" type="number" min="0" max="100" step="any" value="5" required></label></div><label>Funding mỗi 8 giờ giả lập (bps)<input name="funding_bps" type="number" min="-100" max="100" step="any" value="1" required></label><p class="micro">1 bps = 0,01%. Funding dương: Long trả, Short nhận. Đây là giả định kiểm thử.</p></details>
+        <button class="button secondary" type="submit" id="save">Lưu thành phiên mới <span>→</span></button><p class="micro" id="config-help">Phiên cũ được giữ trong lịch sử xuất JSON.</p>
+      </form>
+    </section>
+  </div>
+  <section id="positions" class="panel positions-panel"><div class="panel-heading"><div><h3>3. Các lệnh đang mở <span class="count" id="open-count">0</span></h3><p>Tối đa một vị thế mỗi cặp, chỉ dùng vốn của phiên</p></div><span class="tag">LONG / SHORT</span></div><div class="table-scroll"><table><thead><tr><th>Cặp / Chiều</th><th>Giá vào</th><th>Giá giả lập</th><th>Ký quỹ</th><th>Cắt lỗ</th><th>Chốt lời</th><th>Lãi/lỗ chưa chốt*</th></tr></thead><tbody id="position-rows"></tbody></table></div><p class="micro table-note">* Lãi/lỗ vị thế chưa trừ phí và funding. Chỉ số tài sản phía trên đã tính các chi phí này.</p></section>
+  <div class="bottom-grid"><section class="panel"><div class="panel-heading"><div><h3>Lệnh đã thực hiện</h3><p id="trade-count">Chưa có lệnh trong phiên này</p></div><a class="text-link" href="/api/export" download>Xuất JSON →</a></div><div class="table-scroll"><table><thead><tr><th>Thời gian</th><th>Cặp</th><th>Thao tác</th><th>Lãi/lỗ sau phí</th><th>Lý do</th></tr></thead><tbody id="trade-rows"></tbody></table></div></section><section class="panel"><div class="panel-heading"><div><h3>Nhật ký hoạt động</h3><p id="connection">Đang kết nối máy chủ…</p></div><span class="status-dot"></span></div><div id="events" class="events"></div></section></div>
+  <footer>Bot Futures — chỉ chạy thử <span>Thanh lý mô phỏng dùng ký quỹ duy trì 0,5%; chưa phản ánh đầy đủ quy tắc Binance. Ngưỡng dừng không bảo đảm giá khớp khi giá nhảy.</span></footer>
+</main>
+</body></html>

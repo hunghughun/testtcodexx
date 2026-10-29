@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Hướng dẫn dùng bot trên Windows</title><link rel="stylesheet" href="style.css"></head><body><main><header><strong>Bot Futures — chạy thử</strong><a href="/">Quay lại bot</a></header><article class="guide">
+<h1>Hướng dẫn dùng bot trên Windows</h1>
+<p><strong>Bản này dùng tiền và giá giả lập, chưa giao dịch trên Binance.</strong> Bạn không cần nạp tiền, không cần đăng nhập Binance và không nhập khóa API.</p>
+<h2>1. Chuẩn bị lần đầu</h2>
+<ol>
+<li>Mở kho <a href="https://github.com/hunghughun/testtcodexx/tree/codex/tradepilot-windows">TradePilot trên GitHub</a>, đăng nhập tài khoản GitHub của bạn nếu cần, rồi chọn nút <strong>Code → Download ZIP</strong>. Nếu tải từ cuộc trò chuyện được, bạn cũng có thể dùng gói <strong>TradePilot-Windows.zip</strong>. Nhấp chuột phải vào tệp, chọn <strong>Extract All / Giải nén tất cả</strong>. Chọn thư mục dễ tìm, ví dụ <code>Documents\TradePilot</code>. Không chạy bot ngay bên trong tệp ZIP.</li>
+<li>Nếu máy chưa có Python: vào <a href="https://www.python.org/downloads/windows/">trang tải Python chính thức</a>, cài Python 3.12 trở lên cho Windows. Nếu trình cài đặt có mục <strong>Add Python to PATH</strong>, hãy tích chọn. Python là chương trình giúp bot hoạt động; bạn không cần học lập trình.</li>
+<li>Mở thư mục đã giải nén và nhấp đúp <strong>Mo-bot-Windows.bat</strong>. Một cửa sổ chữ sẽ xuất hiện. Lần đầu cần Internet để tải thư viện; hãy chờ, không đóng cửa sổ.</li>
+<li>Khi khởi động xong, bot sẽ mở trình duyệt. Nếu trình duyệt không tự mở, mở Chrome hoặc Edge và gõ <code>127.0.0.1:8000</code> vào thanh địa chỉ. Địa chỉ này chỉ có tác dụng trên chính máy Windows đang chạy bot; không phải website công khai.</li>
+</ol>
+<p>Từ lần thứ hai, chỉ cần mở lại tệp <strong>Mo-bot-Windows.bat</strong>. Đừng xóa thư mục <code>.venv</code> hoặc <code>.runtime</code>; chúng chứa các thành phần đã cài và lịch sử phiên của bạn.</p>
+<h2>2. Kiểm tra các ô cài đặt</h2>
+<p>Các thông số bạn đã chọn được điền sẵn:</p>
+<table><thead><tr><th>Ô trên giao diện</th><th>Giá trị</th><th>Ý nghĩa</th></tr></thead><tbody>
+<tr><td>Vốn ban đầu</td><td>500</td><td>Số USDT giả lập bot được sử dụng trong phiên.</td></tr>
+<tr><td>Mục tiêu tổng</td><td>1000</td><td>Muốn tổng tài sản đạt 1.000 USDT, tức lãi thêm 500 USDT so với ban đầu.</td></tr>
+<tr><td>Lỗ tối đa</td><td>300</td><td>Cho phép mất tối đa theo ngưỡng 300 USDT; bot kích hoạt đóng khi tài sản còn 200 USDT hoặc thấp hơn. Mức lỗ này bằng 60% vốn đầu.</td></tr>
+<tr><td>Cặp được phép</td><td>BTCUSDT, ETHUSDT</td><td>Bot chỉ giao dịch hai cặp này.</td></tr>
+<tr><td>Đòn bẩy</td><td>5</td><td>Mô phỏng isolated 5x. Giá biến động có tác động lớn hơn lên phần tiền ký quỹ.</td></tr>
+</tbody></table>
+<p>Các thông số mẫu bổ sung hiện là <strong>50 USDT ký quỹ mỗi lệnh</strong>, <strong>cắt lỗ 2%</strong> và <strong>chốt lời 4%</strong>. Lần đầu bạn có thể giữ nguyên để học cách dùng; đây không phải thông số đã chứng minh sinh lời.</p>
+<p><strong>Ký quỹ 50 USDT ở 5x</strong> tương đương vị thế khoảng 250 USDT. Cắt lỗ 2% là 2% biến động giá, không phải 2% của toàn bộ vốn 500 USDT. Với vị thế đó, biến động bất lợi 2% tương đương lỗ khoảng 5 USDT trước phí, nếu khớp đúng giá dự kiến. “Isolated” nghĩa là ký quỹ được tách riêng theo vị thế.</p>
+<p>Phần <strong>Chi phí mô phỏng</strong> có thể để nguyên. Bot tính phí mở/đóng, chênh lệch giá khớp giả định và funding (khoản thanh toán định kỳ giữa hai chiều vị thế).</p>
+<h2>3. Bắt đầu chạy</h2>
+<ol>
+<li>Bấm <strong>Lưu thành phiên mới</strong> để lưu bộ cài đặt. Thao tác này chưa cho bot chạy. Phiên là một lần chạy với bộ vốn và mục tiêu riêng.</li>
+<li>Bấm <strong>Chạy mô phỏng</strong>. Trạng thái phải đổi thành <strong>Đang mô phỏng</strong>.</li>
+<li>Chờ khoảng một phút. Bot cần ít nhất 16 mẫu giá để tính tín hiệu; không có lệnh ngay lúc bấm chạy là bình thường.</li>
+<li>Xem <strong>Các lệnh đang mở</strong> và <strong>Lệnh đã thực hiện</strong>. Bot tự chọn Long khi quy tắc mẫu kỳ vọng giá tăng hoặc Short khi kỳ vọng giá giảm; bạn không phải tự bấm mua/bán.</li>
+</ol>
+<p>Mỗi 2 giây thực tương đương một phút giả lập. Bot này không dùng giá Binance hiện tại. Chữ <strong>Đã kết nối</strong> trên giao diện nghĩa là trình duyệt kết nối được chương trình bot trên máy của bạn.</p>
+<h2>4. Theo dõi kết quả và dừng</h2>
+<ul>
+<li><strong>Tài sản ước tính sau đóng lệnh:</strong> số tiền dự kiến còn lại nếu đóng các vị thế đang mở, có tính chi phí. Chỉ số này có thể giảm nhẹ ngay sau khi vào lệnh vì phí và trượt giá.</li>
+<li><strong>Lãi/lỗ:</strong> chênh lệch so với vốn đầu phiên. Ví dụ tài sản 520 USDT thì đang lãi khoảng 20 USDT.</li>
+<li><strong>Đạt mục tiêu:</strong> bot đóng các vị thế và kết thúc phiên khi tài sản ước tính đạt từ 1.000 USDT.</li>
+<li><strong>Chạm ngưỡng lỗ:</strong> bot kích hoạt đóng khi tài sản còn từ 200 USDT trở xuống. Giá nhảy có thể khiến số tiền sau đóng thấp hơn ngưỡng này.</li>
+<li><strong>Muốn dừng sớm:</strong> bấm <strong>Dừng & đóng vị thế</strong>, chờ trạng thái <strong>Đã dừng</strong> và số lệnh đang mở bằng 0.</li>
+</ul>
+<p>Mục tiêu từ 500 lên 1.000 USDT không được bảo đảm. Việc bot chạy tự động không có nghĩa là nó chắc chắn tìm được lợi nhuận.</p>
+<h2>5. Đóng chương trình hoặc mở lại</h2>
+<p><strong>Chỉ đóng tab trình duyệt sẽ không dừng bot</strong> nếu cửa sổ chạy chương trình vẫn còn. Muốn tắt hẳn: bấm <strong>Dừng & đóng vị thế</strong> trên trang trước, chờ các vị thế đóng xong, rồi quay về cửa sổ chương trình và nhấn <strong>Ctrl+C</strong>.</p>
+<p>Nếu tắt máy, mất điện hoặc máy ngủ, bot không thể tiếp tục xử lý bình thường. Khi mở lại sau khi tiến trình bị dừng, phiên đang chạy được chuyển sang <strong>Đã tạm dừng</strong>; bấm <strong>Tiếp tục mô phỏng</strong> nếu muốn tiếp tục phiên cũ. Nếu phiên đã kết thúc, bấm <strong>Lưu thành phiên mới</strong> trước khi chạy lại.</p>
+<p>Lịch sử lưu trong thư mục <code>.runtime</code>. Nút <strong>Xuất JSON</strong> tải bản sao lịch sử; bạn không cần biết đọc tệp này để dùng bot.</p>
+<h2>6. Khi có trục trặc</h2>
+<ul>
+<li><strong>Không tìm thấy Python:</strong> cài Python 3.12 trở lên từ trang chính thức, rồi mở lại tệp <code>.bat</code>.</li>
+<li><strong>Trình duyệt báo không thể truy cập:</strong> kiểm tra cửa sổ chương trình còn mở không và địa chỉ có đúng <code>127.0.0.1:8000</code> không. Địa chỉ đó trên máy bạn không mở được ứng dụng đang chạy ở một máy chủ khác.</li>
+<li><strong>Cài thư viện thất bại:</strong> kiểm tra Internet và giữ lại thông báo lỗi trong cửa sổ. Không bỏ qua kiểm tra chứng chỉ hay tắt phần mềm bảo vệ để ép cài.</li>
+<li><strong>Nút Chạy bị mờ:</strong> lưu thay đổi cài đặt trước. Nếu phiên đã kết thúc, lưu thành phiên mới. Nếu đang chạy, nút Chạy bị khóa để tránh chạy trùng.</li>
+<li><strong>Không sửa được cài đặt:</strong> dừng và đóng vị thế trước. Không thay vốn hay mục tiêu giữa một phiên đang hoạt động.</li>
+<li><strong>Windows chặn tệp hoặc lỗi khác:</strong> ghi lại nội dung thông báo để được hỗ trợ; không gửi mật khẩu hoặc khóa API.</li>
+</ul>
+<h2>7. Khi nào mới dùng được với Binance thật?</h2>
+<p>Bản này chưa có kết nối Binance, nên nhập 500 USDT không chuyển hay trừ tiền trong tài khoản của bạn. Phần tiếp theo còn cần triển khai kết nối Binance Futures Testnet (sàn thử với tiền ảo), kiểm tra lệnh trên sàn, rồi mới cấu hình giao dịch thật.</p>
+<p>Nút <strong>Publish</strong> trong môi trường Codex chỉ lưu môi trường phát triển. Nó không tự tạo website công khai, không cài bot vào Windows và không kích hoạt giao dịch Binance.</p>
+<p><small>Ghi chú kiểm tra: ứng dụng và bộ mở bằng Python được kiểm tra trên Linux trong môi trường phát triển. Chưa kiểm thử trực tiếp tệp .bat trên một máy Windows.</small></p>
+</article>
+</main></body></html>
