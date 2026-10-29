@@ -5,7 +5,8 @@ from bot.binance import ExchangeError
 
 
 class FakeBinance:
-    def __init__(self,key='k'*32,secret='s'*32):
+    def __init__(self,key='k'*32,secret='s'*32,mode='demo'):
+        self.mode=mode
         self.fingerprint=hashlib.sha256(key.encode()).hexdigest()
         self._offset=0
         self.millis=1800000000000
@@ -20,6 +21,8 @@ class FakeBinance:
         self.writes=[]
         self.hedge=False
         self.multi=False
+        self.can_trade=True
+        self.fee_burn=False
         self.next_id=1
         self.timeout_entry=False
         self.unknown_entry=False
@@ -32,7 +35,7 @@ class FakeBinance:
 
     def sync_time(self):return self.millis
     def account(self):
-        return {'canTrade':True,'assets':[{'asset':'USDT','walletBalance':str(self.wallet),'availableBalance':str(self.wallet-50*len(self.position))}]}
+        return {'assets':[{'asset':'USDT','walletBalance':str(self.wallet),'availableBalance':str(self.wallet-50*len(self.position))}]}
     def positions(self):
         return [{'symbol':s,'positionSide':'BOTH','positionAmt':str(p['qty']),'entryPrice':str(p['entry']),
                  'markPrice':str(self.market[s]),'isolatedWallet':str(abs(p['qty'])*p['entry']/5),
@@ -54,6 +57,8 @@ class FakeBinance:
         if client_id not in source:raise ExchangeError('Order missing',code=-2013)
         return source[client_id].copy()
     def get(self,path,**params):
+        if path.endswith('/accountConfig'):return {'canTrade':self.can_trade,'dualSidePosition':self.hedge,'multiAssetsMargin':self.multi}
+        if path.endswith('/feeBurn'):return {'feeBurn':self.fee_burn}
         if path.endswith('/positionSide/dual'):return {'dualSidePosition':self.hedge}
         if path.endswith('/multiAssetsMargin'):return {'multiAssetsMargin':self.multi}
         if path.endswith('/commissionRate'):return {'takerCommissionRate':'0.0005'}

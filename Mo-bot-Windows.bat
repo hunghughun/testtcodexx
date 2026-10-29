@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Bot Futures - mo phong va Binance Demo, khong giao dich tien that.
+echo TradePilot - Binance Futures. Tien that chi bat dau sau khi ban xac nhan trong ung dung.
 where py >nul 2>nul
 if errorlevel 1 goto use_python
 py -3 "%~dp0mo_bot.py"

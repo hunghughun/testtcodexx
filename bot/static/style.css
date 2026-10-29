@@ -111,3 +111,8 @@ select:disabled { color:#68717c; background:#f3f4f6; }
 .check-label input { width:17px; height:17px; flex-shrink:0; margin-top:4px; }
 .vertical-actions { flex-direction:column; }
 @media(max-width:600px) { .demo-metrics { grid-template-columns:1fr; } .top-links { gap:8px; } }
+
+.live-notice { border-left: 4px solid #b42318; }
+.live-confirm-panel { margin: 20px 0; padding: 18px; }
+.live-confirm-panel input { max-width: 420px; }
+.live-confirm-panel p { line-height: 1.6; }

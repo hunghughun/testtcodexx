@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict
 
 from .models import SessionConfig
 from .service import Conflict, Service
-from .demo import DemoService, DemoConfig, DemoCredentials
+from .futures import DemoService, LiveService, FuturesConfig, FuturesCredentials
 from .binance import ExchangeError
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -22,21 +22,32 @@ STATIC = Path(__file__).resolve().parent / "static"
 
 class DemoStart(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    config: DemoConfig
+    config: FuturesConfig
     confirm_demo: Literal[True]
 
 
-class DemoOrder(BaseModel):
+class FuturesOrder(BaseModel):
     model_config = ConfigDict(extra='forbid')
     symbol: str
     side: Literal['LONG','SHORT']
     request_id: UUID
 
 
-def create_app(db_path=None, run_worker=True, demo_client_factory=None):
+class LiveConfirmation(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    confirm_live: Literal['GIAO DICH TIEN THAT']
+
+
+class LiveStart(LiveConfirmation):
+    config: FuturesConfig
+
+
+def create_app(db_path=None, run_worker=True, demo_client_factory=None, live_client_factory=None):
     service = Service(db_path or os.environ.get("BOT_DB_PATH", ".runtime/bot.sqlite3"))
     demo_path = Path(service.db_path).with_name(Path(service.db_path).stem+'-demo.sqlite3')
     demo = DemoService(demo_path, **({'client_factory':demo_client_factory} if demo_client_factory else {}))
+    live_path = Path(service.db_path).with_name(Path(service.db_path).stem+'-live.sqlite3')
+    live = LiveService(live_path, client_factory=live_client_factory)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -52,28 +63,34 @@ def create_app(db_path=None, run_worker=True, demo_client_factory=None):
 
         worker = threading.Thread(target=work, daemon=True, name="paper-trading")
 
-        def demo_work():
+        def exchange_work(exchange):
             while not shutdown.wait(10):
                 try:
-                    demo.tick()
+                    exchange.tick()
                 except Exception:
-                    logging.error('Demo worker paused due to an unexpected error; no request details logged.')
-                    try: demo.pause('Lỗi hệ thống. Đã tạm dừng Demo; kiểm tra lệnh trên sàn rồi đối soát.')
+                    logging.error('Futures worker paused due to an unexpected error; no request details logged.')
+                    try: exchange.pause('Lỗi hệ thống. Đã tạm dừng; kiểm tra lệnh trên sàn rồi đối soát.')
                     except ExchangeError: pass
 
-        demo_worker = threading.Thread(target=demo_work, daemon=True, name='binance-demo')
+        demo_worker = threading.Thread(target=exchange_work, args=(demo,), daemon=True, name='binance-demo')
+        live_worker = threading.Thread(target=exchange_work, args=(live,), daemon=True, name='binance-live')
         if run_worker:
             worker.start()
             demo_worker.start()
+            live_worker.start()
         yield
         shutdown.set()
         if run_worker:
             worker.join(timeout=5)
             demo_worker.join(timeout=5)
+            live_worker.join(timeout=5)
+        if not live_worker.is_alive():
+            live.close()
 
-    app = FastAPI(title="TradePilot — Futures simulator & Binance Demo", lifespan=lifespan)
+    app = FastAPI(title="TradePilot — Binance Futures", lifespan=lifespan)
     app.state.service = service
     app.state.demo = demo
+    app.state.live = live
 
     @app.middleware("http")
     async def local_access(request: Request, call_next):
@@ -111,13 +128,13 @@ def create_app(db_path=None, run_worker=True, demo_client_factory=None):
     def demo_state(): return demo.snapshot()
 
     @app.post('/api/demo/connect')
-    def demo_connect(credentials: DemoCredentials): return demo.connect(credentials)
+    def demo_connect(credentials: FuturesCredentials): return demo.connect(credentials)
 
     @app.post('/api/demo/start')
     def demo_start(body: DemoStart): return demo.start(body.config)
 
     @app.post('/api/demo/order')
-    def demo_order(body: DemoOrder): return demo.manual_order(body.symbol,body.side,str(body.request_id))
+    def demo_order(body: FuturesOrder): return demo.manual_order(body.symbol,body.side,str(body.request_id))
 
     @app.post('/api/demo/refresh')
     def demo_refresh(): return demo.refresh()
@@ -131,9 +148,34 @@ def create_app(db_path=None, run_worker=True, demo_client_factory=None):
     @app.get('/demo')
     def demo_page(): return FileResponse(STATIC / 'demo.html')
 
+    @app.get('/live')
+    def live_page(): return FileResponse(STATIC / 'live.html')
+
+    @app.get('/api/live/state')
+    def live_state(): return live.snapshot()
+
+    @app.post('/api/live/connect')
+    def live_connect(credentials: FuturesCredentials): return live.connect(credentials)
+
+    @app.post('/api/live/start')
+    def live_start(body: LiveStart): return live.start(body.config, body.confirm_live)
+
+    @app.post('/api/live/order')
+    def live_order(body: FuturesOrder): return live.manual_order(body.symbol,body.side,str(body.request_id))
+
+    @app.post('/api/live/refresh')
+    def live_refresh(): return live.refresh()
+
+    @app.post('/api/live/resume')
+    def live_resume(body: LiveConfirmation): return live.resume(body.confirm_live)
+
+    @app.post('/api/live/stop')
+    def live_stop(): return live.stop()
+
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "mode": "paper", "live_trading": False}
+        return {"status": "ok", "app": "tradepilot", "version": "0.3",
+                "live_supported": True, "live_trading": live.s['status']=='running'}
 
     @app.get("/api/state")
     def state():

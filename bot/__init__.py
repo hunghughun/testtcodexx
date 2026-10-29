@@ -1,1 +1,1 @@
-"""Local Futures simulator and Binance Demo connector; production trading disabled."""
+"""Local Futures simulator and separate Binance Demo/live connectors."""

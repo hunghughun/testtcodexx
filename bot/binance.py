@@ -1,4 +1,4 @@
-"""Small, Demo-only REST adapter. No production URL or automatic write retry."""
+"""Fixed-environment Futures REST adapters; no automatic write retries."""
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 import hashlib
 import hmac
@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 DEMO_URL = 'https://demo-fapi.binance.com'
+LIVE_URL = 'https://fapi.binance.com'
 D = Decimal
 
 
@@ -39,7 +40,11 @@ def rounded(value, step, up=False):
     return (value / step).to_integral_value(rounding=ROUND_UP if up else ROUND_DOWN) * step
 
 
-class BinanceDemo:
+class BinanceFutures:
+    base_url = DEMO_URL
+    mode = 'demo'
+    label = 'Binance Demo'
+
     def __init__(self, api_key, api_secret, *, opener=None, clock=time.time):
         self._key, self._secret = api_key, api_secret
         self._clock = clock
@@ -58,7 +63,7 @@ class BinanceDemo:
         if self._clock() < self._blocked_until:
             raise ExchangeError('Đang chờ Binance hết giới hạn truy cập. Hãy thử lại sau.')
         params = dict(params or {})
-        headers = {'User-Agent': 'TradePilot-Demo/0.2'}
+        headers = {'User-Agent': 'TradePilot-Futures/0.3'}
         if signed:
             if self._clock() - self._synced > 60:
                 self.sync_time()
@@ -68,7 +73,7 @@ class BinanceDemo:
         if signed:
             signature = hmac.new(self._secret.encode(), query.encode(), hashlib.sha256).hexdigest()
             query += '&signature=' + signature
-        url = DEMO_URL + path
+        url = self.base_url + path
         data = None
         if method in {'POST', 'PUT'}:
             data = query.encode()
@@ -92,19 +97,19 @@ class BinanceDemo:
                 try: delay = max(60, int(exc.headers.get('Retry-After', '60')))
                 except (TypeError, ValueError): delay = 60
                 self._blocked_until = self._clock() + delay
-            descriptions = {-2015:'Khóa Demo hoặc quyền API không hợp lệ.', -2014:'Sai định dạng API Key.',
-                            -1022:'Sai API Secret hoặc loại khóa; cần khóa HMAC của Demo.',
+            descriptions = {-2015:f'Khóa, quyền Futures hoặc IP API không hợp lệ trên {self.label}.', -2014:'Sai định dạng API Key.',
+                            -1022:f'Sai API Secret hoặc loại khóa; cần khóa HMAC của {self.label}.',
                             -1021:'Đồng hồ lệch với Binance; hãy kiểm tra giờ máy tính và kết nối lại.',
-                            -2019:'Không đủ ký quỹ Demo.', -2013:'Chưa tìm thấy lệnh trên sàn.',
+                            -2019:'Không đủ ký quỹ Futures.', -2013:'Chưa tìm thấy lệnh trên sàn.',
                             -4046:'Ký quỹ đã ở chế độ yêu cầu.', -2021:'Giá kích hoạt SL/TP đã bị vượt qua.',
                             -2022:'Sàn từ chối lệnh giảm vị thế.'}
-            message = descriptions.get(code, f'Binance Demo từ chối yêu cầu (HTTP {exc.code}, mã {code}).')
+            message = descriptions.get(code, f'{self.label} từ chối yêu cầu (HTTP {exc.code}, mã {code}).')
             if exc.code == 451:
-                message = 'Binance Demo không khả dụng từ vị trí mạng hiện tại.'
-            uncertain = method not in {'GET'} and (exc.code >= 500 or exc.code in {408, 418, 429} or 300 <= exc.code < 400)
+                message = f'{self.label} không khả dụng từ vị trí mạng hiện tại.'
+            uncertain = method != 'GET' and (code in {-1001,-1006,-1007} or exc.code >= 500 or exc.code in {408, 418, 429} or 300 <= exc.code < 400)
             raise ExchangeError(message, code=code, uncertain=uncertain) from None
         except (URLError, TimeoutError, OSError, ValueError):
-            raise ExchangeError('Không nhận được phản hồi hợp lệ từ Binance Demo. Kiểm tra mạng/proxy; không tự gửi lại lệnh.',
+            raise ExchangeError(f'Không nhận được phản hồi hợp lệ từ {self.label}. Kiểm tra mạng/proxy; không tự gửi lại lệnh.',
                                 uncertain=method != 'GET') from None
 
     def sync_time(self):
@@ -143,10 +148,20 @@ class BinanceDemo:
         return self.get('/fapi/v1/order', symbol=symbol, origClientOrderId=client_id)
 
 
+class BinanceDemo(BinanceFutures):
+    """Demo keys are only ever sent to the Demo endpoint."""
+
+
+class BinanceLive(BinanceFutures):
+    base_url = LIVE_URL
+    mode = 'live'
+    label = 'Binance tiền thật'
+
+
 class SymbolRules:
     def __init__(self, info):
         if info.get('status') != 'TRADING' or info.get('quoteAsset') != 'USDT' or info.get('contractType') != 'PERPETUAL':
-            raise ExchangeError('Chỉ hỗ trợ hợp đồng USDT PERPETUAL đang giao dịch trên Demo.')
+            raise ExchangeError('Chỉ hỗ trợ hợp đồng USDT PERPETUAL đang giao dịch.')
         filters = {f['filterType']:f for f in info['filters']}
         self.lot = filters['LOT_SIZE']
         self.market = filters.get('MARKET_LOT_SIZE', self.lot)

@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Hướng dẫn dùng bot trên Windows</title><link rel="stylesheet" href="bot/static/style.css"></head><body><main><header><strong>Bot Futures — chạy thử</strong></header><article class="guide">
 <h1>Hướng dẫn dùng bot trên Windows</h1>
-<p><strong>Hướng dẫn này dành cho trang mô phỏng cục bộ, dùng tiền và giá giả lập.</strong> Ứng dụng còn có trang Binance Demo gửi lệnh bằng tiền thử; chế độ tiền thật vẫn bị khóa. Bạn không cần nạp tiền, không cần đăng nhập Binance và không nhập khóa API.</p>
+<p><strong>Hướng dẫn này dành cho trang mô phỏng cục bộ, dùng tiền và giá giả lập.</strong> Ứng dụng còn có các trang Binance Demo và Binance tiền thật riêng. Với trang mô phỏng cục bộ trong hướng dẫn này, bạn không cần nạp tiền hoặc nhập khóa API.</p>
 <h2>1. Chuẩn bị lần đầu</h2>
 <ol>
 <li>Mở kho <a href="https://github.com/hunghughun/testtcodexx/tree/codex/tradepilot-windows">TradePilot trên GitHub</a>, đăng nhập tài khoản GitHub của bạn nếu cần, rồi chọn nút <strong>Code → Download ZIP</strong>. Nếu tải từ cuộc trò chuyện được, bạn cũng có thể dùng gói <strong>TradePilot-Windows.zip</strong>. Nhấp chuột phải vào tệp, chọn <strong>Extract All / Giải nén tất cả</strong>. Chọn thư mục dễ tìm, ví dụ <code>Documents\TradePilot</code>. Không chạy bot ngay bên trong tệp ZIP.</li>
@@ -53,7 +53,7 @@
 <li><strong>Windows chặn tệp hoặc lỗi khác:</strong> ghi lại nội dung thông báo để được hỗ trợ; không gửi mật khẩu hoặc khóa API.</li>
 </ul>
 <h2>7. Kết nối Binance Demo</h2>
-<p>Trang mô phỏng cục bộ không tác động tài khoản của bạn. Để thử lệnh trên sàn, mở <strong>Binance Demo</strong> trên trang đầu và đọc <a href="bot/static/huong-dan-demo.html">hướng dẫn kết nối Demo</a>. Cần khóa HMAC của USDⓈ-M Futures Demo, nhập trực tiếp trên máy của bạn. Bản này chưa cho phép giao dịch tiền thật.</p>
+<p>Trang mô phỏng cục bộ không tác động tài khoản của bạn. Để thử lệnh trên sàn, mở <strong>Binance Demo</strong> trên trang đầu và đọc <a href="bot/static/huong-dan-demo.html">hướng dẫn kết nối Demo</a>. Cần khóa HMAC của USDⓈ-M Futures Demo, nhập trực tiếp trên máy của bạn. Để dùng tài khoản thật, đọc <a href="bot/static/huong-dan-live.html">hướng dẫn Binance tiền thật</a>, rồi chọn trang Binance tiền thật trong ứng dụng. Lệnh ở trang đó dùng tiền thật; cần nhập khóa và xác nhận bắt đầu.</p>
 <p>Publish trong Codex chỉ lưu môi trường phát triển; không cài bot vào Windows hoặc bật giao dịch Binance.</p>
 <p><small>Ghi chú kiểm tra: ứng dụng và bộ mở bằng Python được kiểm tra trên Linux trong môi trường phát triển. Chưa kiểm thử trực tiếp tệp .bat trên một máy Windows.</small></p>
 </article>

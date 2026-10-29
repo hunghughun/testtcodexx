@@ -1,13 +1,14 @@
 # TradePilot · Futures Lab
 
-Ứng dụng Futures Long/Short bằng Python + FastAPI, giao diện tiếng Việt. Có hai trang:
+Ứng dụng Futures Long/Short bằng Python + FastAPI, giao diện tiếng Việt. Có ba trang:
 
 | Trang | Dữ liệu / lệnh | Khóa API |
 | --- | --- | --- |
 | Mô phỏng cục bộ (`/`) | Giá và tiền tổng hợp, không gửi lệnh Binance | Không cần |
 | Binance Demo (`/demo`) | Giá/nến từ Demo, gửi lệnh và SL/TP lên sàn thử | HMAC API Key/Secret của USDⓈ-M Futures Demo |
+| Binance tiền thật (`/live`) | Giá, lệnh, SL/TP trên Binance USDⓈ-M thật | HMAC API Key/Secret của tài khoản thật |
 
-**Chế độ tiền thật bị khóa.** Kết nối Demo đã có mã triển khai và kiểm thử bằng fake exchange; chưa xác minh trên tài khoản Binance Demo thật do không có khóa và mạng cloud chặn truy cập. Không xem kết quả kiểm thử là bằng chứng lợi nhuận.
+**Đã có chế độ tiền thật, chỉ kích hoạt khi người dùng nhập khóa và xác nhận bắt đầu trong trang `/live`.** Mở ứng dụng hoặc kiểm tra kết nối không tự giao dịch. Chưa xác minh end-to-end trên tài khoản Binance Demo hoặc tiền thật vì không có khóa và mạng cloud chặn Binance. Kiểm thử bằng fake exchange không chứng minh lợi nhuận hay độ tin cậy của sàn thực tế.
 
 ## Dành cho người dùng Windows không biết lập trình
 
@@ -17,9 +18,21 @@ Mở [HUONG-DAN.html](HUONG-DAN.html) bằng trình duyệt để xem hướng d
 
 Giao diện dùng nền sáng, có nút **Hướng dẫn sử dụng**. Đây là ứng dụng chạy trên chính máy của bạn; không có website công khai hay bản cài `.exe`. Nút Publish trong Codex không cài chương trình vào Windows. Tệp `.bat` chưa được kiểm thử trực tiếp trên Windows; cơ chế mở bằng Python được xác minh trong môi trường Linux.
 
+## Dùng Binance tiền thật trên Windows
+
+Hướng dẫn đầy đủ, không cần biết code: [bot/static/huong-dan-live.html](bot/static/huong-dan-live.html), hoặc nút **Hướng dẫn tiền thật** trong ứng dụng.
+
+1. Đóng bot cũ, tải ZIP từ GitHub, cập nhật tệp và giữ nguyên `.runtime`. Mở `Mo-bot-Windows.bat` → **Binance tiền thật**.
+2. Dùng tài khoản USDⓈ-M Futures riêng, không vị thế/lệnh chờ; One-way / Single-Asset USDT. Tắt Auto-add Margin và trả phí bằng BNB. Tự chuyển vốn vào ví Futures.
+3. Tạo khóa HMAC tài khoản thật với quyền đọc/Futures, tắt rút/chuyển tiền không cần thiết, giới hạn IP tin cậy. Nhập khóa trực tiếp trong ứng dụng → **Kiểm tra kết nối (chỉ đọc)**. Bot không kiểm tra được toàn bộ quyền của khóa; xác minh trong Binance.
+4. Chỉnh vốn, mục tiêu, mức lỗ, cặp, isolated/leverage, ký quỹ/lệnh và SL/TP. Chọn **Tự động SMA 5/15** nếu muốn bot tự tìm tín hiệu, hoặc thủ công để tự bấm Long/Short.
+5. Xem lại cấu hình, nhập **GIAO DICH TIEN THAT** → **Bắt đầu phiên tiền thật**. Bước này mới cài isolated/đòn bẩy và cho phép gửi lệnh. Tiếp tục phiên sau tạm dừng cũng cần xác nhận; nút dừng/đóng không cần câu xác nhận.
+
+Mặc định vẫn là thủ công; kết nối không bật tự động. Khóa chỉ ở RAM, không dùng lại khóa Demo. Tiền thật lưu riêng `.runtime/bot-live.sqlite3` (hoặc hậu tố `-live` với `BOT_DB_PATH` khác), có khóa hệ điều hành chống hai tiến trình cùng DB. Không chạy nhiều máy/bản bot khác thư mục trên cùng tài khoản. Khởi động lại chuyển phiên sang tạm dừng, cần nhập lại cùng khóa để đối soát/tiếp tục hoặc đóng. Mục tiêu tăng 500 thành 1.000 USDT và ngưỡng lỗ không được bảo đảm. Bot không nạp/rút tiền; mức vốn là ngân sách phần mềm, không tạo ví độc lập trên Binance.
+
 ## Dùng Binance Demo
 
-Sau khi mở ứng dụng, chọn **Binance Demo** → nhập khóa HMAC Demo → **Kiểm tra kết nối** (chỉ đọc). Dùng tài khoản Demo riêng không có lệnh/vị thế, One-way và Single-Asset USDT. Chọn **kiểm tra thủ công** để thử Long/Short hoặc **tự động SMA 5/15** để bot chờ tín hiệu nến đóng. Bấm **Bắt đầu phiên Demo** trước khi gửi lệnh.
+Sau khi mở ứng dụng, chọn **Binance Demo** → nhập khóa HMAC Demo → **Kiểm tra kết nối** (chỉ đọc). Dùng tài khoản Demo riêng không có lệnh/vị thế, One-way và Single-Asset USDT, tắt trả phí Futures bằng BNB. Chọn **kiểm tra thủ công** để thử Long/Short hoặc **tự động SMA 5/15** để bot chờ tín hiệu nến đóng. Bấm **Bắt đầu phiên Demo** trước khi gửi lệnh.
 
 Hướng dẫn từng bước ở [bot/static/huong-dan-demo.html](bot/static/huong-dan-demo.html), cũng mở được từ nút **Hướng dẫn Demo** trong ứng dụng. Khóa chỉ giữ trong bộ nhớ, không ghi lên đĩa; cần nhập lại cùng khóa sau khi khởi động lại. Giữ nguyên thư mục `.runtime` khi cập nhật phiên bản. Demo lưu riêng trong `.runtime/bot-demo.sqlite3`; `BOT_DB_PATH` khác sẽ tạo DB Demo cùng thư mục với hậu tố `-demo`.
 
@@ -73,7 +86,7 @@ Chỉ chạy **một tiến trình / một worker** cho mỗi cơ sở dữ li�
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Bộ kiểm thử bao phủ Long/Short, phí hai chiều, trượt giá, funding, thanh lý isolated, SL/TP, dừng theo mục tiêu/lỗ, cặp cho phép, kiểm tra dữ liệu giá, đối soát số dư, khôi phục phiên và các API. Kiểm tra trình duyệt tùy chọn dùng `tests/browser_smoke.py`, cần Playwright và Chromium; script tạo máy chủ với DB tạm riêng và tự dọn khi xong. `tests/demo_browser_smoke.py` kiểm tra trang Demo với sàn giả lập riêng; không gửi lệnh Binance thật.
+Bộ kiểm thử bao phủ Long/Short, phí hai chiều, trượt giá, funding, thanh lý isolated, SL/TP, dừng theo mục tiêu/lỗ, cặp cho phép, kiểm tra dữ liệu giá, đối soát số dư, khôi phục phiên và các API. Kiểm tra trình duyệt tùy chọn dùng `tests/browser_smoke.py`, cần Playwright và Chromium; script tạo máy chủ với DB tạm riêng và tự dọn khi xong. `tests/demo_browser_smoke.py` kiểm tra cả Demo và tiền thật bằng hai sàn giả lập riêng, gồm ô xác nhận tiền thật, SL/TP, dừng và giao diện desktop/mobile; không gửi lệnh Binance thật.
 
 ## Giới hạn mô phỏng cục bộ
 
@@ -82,4 +95,4 @@ Bộ kiểm thử bao phủ Long/Short, phí hai chiều, trượt giá, funding
 - Chưa mô phỏng order book, tick/step size, min notional, partial fills, funding thực tế và gián đoạn sàn. SL/TP là ngưỡng do mô phỏng xử lý, chưa phải lệnh điều kiện đặt trên Binance.
 - Ngưỡng 200 USDT là điều kiện kích hoạt đóng, không phải mức tiền còn lại được bảo đảm nếu giá nhảy. Mục tiêu tăng từ 500 lên 1.000 USDT cũng không được bảo đảm.
 
-Chi tiết kết nối Demo đã triển khai, các giới hạn và phần chưa xác minh được ghi ở [docs/binance-integration.md](docs/binance-integration.md).
+Chi tiết kết nối Demo/tiền thật đã triển khai, các giới hạn và phần chưa xác minh được ghi ở [docs/binance-integration.md](docs/binance-integration.md).

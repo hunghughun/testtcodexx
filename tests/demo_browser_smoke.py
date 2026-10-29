@@ -52,10 +52,50 @@ with tempfile.TemporaryDirectory() as temp:
             assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
             assert not errors,errors
             assert page.evaluate('Object.keys(localStorage).length')==0
+            # Live UI is wired to a separate FakeBinance, never to a real account.
+            page.goto('http://127.0.0.1:8003/live')
+            expect(page.get_by_role('heading',name='Kết nối Binance tiền thật')).to_be_visible()
+            expect(page.locator('#live-start')).to_be_disabled()
+            with page.expect_popup() as popup:
+                page.get_by_role('link',name='Hướng dẫn tiền thật').click()
+            guide=popup.value
+            expect(guide.get_by_role('heading',name='Chạy Binance Futures tiền thật trên Windows')).to_be_visible()
+            guide.close()
+            page.locator('input[name=api_key]').fill('k'*32)
+            page.locator('input[name=api_secret]').fill('s'*32)
+            page.locator('#live-connect').click()
+            expect(page.locator('#live-connection')).to_have_text('Đã kết nối Binance tiền thật')
+            expect(page.locator('#live-start')).to_be_disabled()
+            assert page.locator('input[name=api_secret]').input_value()==''
+            page.locator('input[name=target]').fill('1200')
+            expect(page.locator('#live-summary')).to_contain_text('1200 USDT')
+            page.locator('#live-confirmation').fill('GIAO DICH DEMO')
+            expect(page.locator('#live-start')).to_be_disabled()
+            page.locator('#live-confirmation').fill('GIAO DICH TIEN THAT')
+            expect(page.locator('#live-start')).to_be_enabled()
+            page.locator('#live-start').click()
+            expect(page.locator('#live-status')).to_have_text('Đang chạy tiền thật')
+            assert page.locator('#live-confirmation').input_value()==''
+            expect(page.locator('input[name=capital]')).to_be_disabled()
+            page.locator('#live-short').click()
+            expect(page.locator('#live-count')).to_have_text('1')
+            expect(page.locator('#live-positions')).to_contain_text('SHORT')
+            expect(page.locator('#live-positions')).to_contain_text(re.compile(r'SL: 102(?:\.0+)? \(NEW\)'))
+            expect(page.locator('#live-orders')).to_contain_text('tpl_')
+            assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+            page.screenshot(path=str(out/'live-mobile.png'),full_page=True)
+            page.set_viewport_size({'width':1440,'height':1000})
+            page.screenshot(path=str(out/'live-desktop.png'),full_page=True)
+            page.locator('#live-stop').click()
+            expect(page.locator('#live-status')).to_have_text('tiền thật đã dừng')
+            expect(page.locator('#live-count')).to_have_text('0')
+            expect(page.locator('#live-start')).to_be_disabled()
+            assert not errors,errors
+            assert page.evaluate('Object.keys(localStorage).length')==0
             for path in Path(temp).glob('*.sqlite3'):
                 assert b's'*32 not in path.read_bytes()
             browser.close()
-            print('Demo browser passed: connect, clear secrets, start, native SL/TP, stop, responsive UI; fake exchange only.')
+            print('Demo + live browser passed: isolated modes, secrets cleared, live confirmation, config preview, native SL/TP, stop, responsive UI; fake exchanges only.')
     finally:
         process.terminate()
         try:process.wait(timeout=5)
