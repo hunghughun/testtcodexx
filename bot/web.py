@@ -3,19 +3,40 @@ import logging
 import os
 from pathlib import Path
 import threading
+from typing import Literal
+from uuid import UUID
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, ConfigDict
 
 from .models import SessionConfig
 from .service import Conflict, Service
+from .demo import DemoService, DemoConfig, DemoCredentials
+from .binance import ExchangeError
 
 STATIC = Path(__file__).resolve().parent / "static"
 
 
-def create_app(db_path=None, run_worker=True):
+class DemoStart(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    config: DemoConfig
+    confirm_demo: Literal[True]
+
+
+class DemoOrder(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    symbol: str
+    side: Literal['LONG','SHORT']
+    request_id: UUID
+
+
+def create_app(db_path=None, run_worker=True, demo_client_factory=None):
     service = Service(db_path or os.environ.get("BOT_DB_PATH", ".runtime/bot.sqlite3"))
+    demo_path = Path(service.db_path).with_name(Path(service.db_path).stem+'-demo.sqlite3')
+    demo = DemoService(demo_path, **({'client_factory':demo_client_factory} if demo_client_factory else {}))
 
     @asynccontextmanager
     async def lifespan(app):
@@ -30,15 +51,29 @@ def create_app(db_path=None, run_worker=True):
                     service.fail("Không thể cập nhật phiên; xem nhật ký máy chủ.")
 
         worker = threading.Thread(target=work, daemon=True, name="paper-trading")
+
+        def demo_work():
+            while not shutdown.wait(10):
+                try:
+                    demo.tick()
+                except Exception:
+                    logging.error('Demo worker paused due to an unexpected error; no request details logged.')
+                    try: demo.pause('Lỗi hệ thống. Đã tạm dừng Demo; kiểm tra lệnh trên sàn rồi đối soát.')
+                    except ExchangeError: pass
+
+        demo_worker = threading.Thread(target=demo_work, daemon=True, name='binance-demo')
         if run_worker:
             worker.start()
+            demo_worker.start()
         yield
         shutdown.set()
         if run_worker:
             worker.join(timeout=5)
+            demo_worker.join(timeout=5)
 
-    app = FastAPI(title="TradePilot — Futures simulator", lifespan=lifespan)
+    app = FastAPI(title="TradePilot — Futures simulator & Binance Demo", lifespan=lifespan)
     app.state.service = service
+    app.state.demo = demo
 
     @app.middleware("http")
     async def local_access(request: Request, call_next):
@@ -61,6 +96,40 @@ def create_app(db_path=None, run_worker=True):
     @app.exception_handler(Conflict)
     async def conflict(request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    @app.exception_handler(ExchangeError)
+    async def exchange_error(request, exc):
+        return JSONResponse({'detail':str(exc)}, status_code=409)
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request, exc):
+        # Pydantic normally echoes invalid input; never echo submitted API secrets.
+        details=[{'loc':e['loc'],'msg':e['msg'],'type':e['type']} for e in exc.errors()]
+        return JSONResponse({'detail':details},status_code=422)
+
+    @app.get('/api/demo/state')
+    def demo_state(): return demo.snapshot()
+
+    @app.post('/api/demo/connect')
+    def demo_connect(credentials: DemoCredentials): return demo.connect(credentials)
+
+    @app.post('/api/demo/start')
+    def demo_start(body: DemoStart): return demo.start(body.config)
+
+    @app.post('/api/demo/order')
+    def demo_order(body: DemoOrder): return demo.manual_order(body.symbol,body.side,str(body.request_id))
+
+    @app.post('/api/demo/refresh')
+    def demo_refresh(): return demo.refresh()
+
+    @app.post('/api/demo/resume')
+    def demo_resume(): return demo.resume()
+
+    @app.post('/api/demo/stop')
+    def demo_stop(): return demo.stop()
+
+    @app.get('/demo')
+    def demo_page(): return FileResponse(STATIC / 'demo.html')
 
     @app.get("/api/health")
     def health():

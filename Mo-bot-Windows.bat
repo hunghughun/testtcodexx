@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Bot Futures - chi chay mo phong, khong giao dich tien that.
+echo Bot Futures - mo phong va Binance Demo, khong giao dich tien that.
 where py >nul 2>nul
 if errorlevel 1 goto use_python
 py -3 "%~dp0mo_bot.py"

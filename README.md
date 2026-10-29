@@ -1,6 +1,13 @@
 # TradePilot · Futures Lab
 
-Ứng dụng web mô phỏng bot Futures Long/Short bằng Python + FastAPI, giao diện tiếng Việt. Bản đầu triển khai giai đoạn **kiểm thử mô phỏng** đã thống nhất: tiền và giá đều giả lập, **chưa tích hợp API giao dịch Binance**. Không cần API key.
+Ứng dụng Futures Long/Short bằng Python + FastAPI, giao diện tiếng Việt. Có hai trang:
+
+| Trang | Dữ liệu / lệnh | Khóa API |
+| --- | --- | --- |
+| Mô phỏng cục bộ (`/`) | Giá và tiền tổng hợp, không gửi lệnh Binance | Không cần |
+| Binance Demo (`/demo`) | Giá/nến từ Demo, gửi lệnh và SL/TP lên sàn thử | HMAC API Key/Secret của USDⓈ-M Futures Demo |
+
+**Chế độ tiền thật bị khóa.** Kết nối Demo đã có mã triển khai và kiểm thử bằng fake exchange; chưa xác minh trên tài khoản Binance Demo thật do không có khóa và mạng cloud chặn truy cập. Không xem kết quả kiểm thử là bằng chứng lợi nhuận.
 
 ## Dành cho người dùng Windows không biết lập trình
 
@@ -9,6 +16,14 @@ Tải mã nguồn từ nhánh [`codex/tradepilot-windows`](https://github.com/hu
 Mở [HUONG-DAN.html](HUONG-DAN.html) bằng trình duyệt để xem hướng dẫn chi tiết. Giải nén gói ứng dụng, cài Python 3.12 trở lên một lần, rồi nhấp đúp `Mo-bot-Windows.bat`. Tệp mở bot tự chuẩn bị thư viện và mở giao diện trong trình duyệt; không tự bắt đầu giao dịch. Giữ cửa sổ chương trình mở trong khi chạy. Không mở trực tiếp tệp trong ZIP.
 
 Giao diện dùng nền sáng, có nút **Hướng dẫn sử dụng**. Đây là ứng dụng chạy trên chính máy của bạn; không có website công khai hay bản cài `.exe`. Nút Publish trong Codex không cài chương trình vào Windows. Tệp `.bat` chưa được kiểm thử trực tiếp trên Windows; cơ chế mở bằng Python được xác minh trong môi trường Linux.
+
+## Dùng Binance Demo
+
+Sau khi mở ứng dụng, chọn **Binance Demo** → nhập khóa HMAC Demo → **Kiểm tra kết nối** (chỉ đọc). Dùng tài khoản Demo riêng không có lệnh/vị thế, One-way và Single-Asset USDT. Chọn **kiểm tra thủ công** để thử Long/Short hoặc **tự động SMA 5/15** để bot chờ tín hiệu nến đóng. Bấm **Bắt đầu phiên Demo** trước khi gửi lệnh.
+
+Hướng dẫn từng bước ở [bot/static/huong-dan-demo.html](bot/static/huong-dan-demo.html), cũng mở được từ nút **Hướng dẫn Demo** trong ứng dụng. Khóa chỉ giữ trong bộ nhớ, không ghi lên đĩa; cần nhập lại cùng khóa sau khi khởi động lại. Giữ nguyên thư mục `.runtime` khi cập nhật phiên bản. Demo lưu riêng trong `.runtime/bot-demo.sqlite3`; `BOT_DB_PATH` khác sẽ tạo DB Demo cùng thư mục với hậu tố `-demo`.
+
+SL/TP Demo là lệnh điều kiện native, kích hoạt bằng mark price và chỉ giảm vị thế. Bot lưu client ID trước khi gửi, đối soát sau timeout, không gửi lại lệnh chưa rõ kết quả. Phí/funding lấy từ Binance; mức phí/funding mẫu bên dưới chỉ áp dụng cho mô phỏng cục bộ. Máy cần hoạt động để theo dõi mục tiêu tổng và hủy lệnh bảo vệ còn lại.
 
 ## Cấu hình theo yêu cầu
 
@@ -42,7 +57,7 @@ Mở trình duyệt trên máy đang chạy ứng dụng, địa chỉ `127.0.0.
 
 Chỉ chạy **một tiến trình / một worker** cho mỗi cơ sở dữ liệu; không dùng `--workers` lớn hơn 1 hoặc nhiều máy chủ cùng mở một DB. Dữ liệu ở `.runtime/bot.sqlite3`, được bỏ qua bởi Git. Có thể đặt đường dẫn khác bằng biến `BOT_DB_PATH`. Không có giao diện đăng nhập; máy chủ chỉ phục vụ loopback và không được thiết kế để công khai ra Internet.
 
-## Cách bot hoạt động
+## Cách mô phỏng cục bộ hoạt động
 
 - SMA nhanh cắt lên SMA chậm: mở Long. Cắt xuống: mở Short. Chỉ đọc mẫu hiện tại và trước đó.
 - Đóng vị thế khi giá chạm SL/TP, có tín hiệu đảo chiều, chạm ngưỡng tài sản hoặc người dùng dừng. Tối đa một vị thế cho mỗi cặp; sau SL/TP có thời gian nghỉ 5 nhịp. Đảo chiều có thể đóng và mở vị thế ngược ngay tại tín hiệu.
@@ -58,13 +73,13 @@ Chỉ chạy **một tiến trình / một worker** cho mỗi cơ sở dữ li�
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Bộ kiểm thử bao phủ Long/Short, phí hai chiều, trượt giá, funding, thanh lý isolated, SL/TP, dừng theo mục tiêu/lỗ, cặp cho phép, kiểm tra dữ liệu giá, đối soát số dư, khôi phục phiên và các API. Kiểm tra trình duyệt tùy chọn dùng `tests/browser_smoke.py`, cần Playwright và Chromium; script tạo máy chủ với DB tạm riêng và tự dọn khi xong.
+Bộ kiểm thử bao phủ Long/Short, phí hai chiều, trượt giá, funding, thanh lý isolated, SL/TP, dừng theo mục tiêu/lỗ, cặp cho phép, kiểm tra dữ liệu giá, đối soát số dư, khôi phục phiên và các API. Kiểm tra trình duyệt tùy chọn dùng `tests/browser_smoke.py`, cần Playwright và Chromium; script tạo máy chủ với DB tạm riêng và tự dọn khi xong. `tests/demo_browser_smoke.py` kiểm tra trang Demo với sàn giả lập riêng; không gửi lệnh Binance thật.
 
-## Giới hạn của bản này
+## Giới hạn mô phỏng cục bộ
 
 - Dữ liệu giá là chuỗi tổng hợp có tính lặp, không phải giá Binance hay backtest lịch sử. Lợi nhuận mô phỏng không chứng minh hiệu quả chiến lược.
 - Mô hình thanh lý đơn giản dùng tỷ lệ duy trì cố định 0,5%; coi toàn bộ ký quỹ vị thế bị mất khi thanh lý. Chưa mô phỏng bậc notional, mark/index price, phí thanh lý thật, ADL hay bảo hiểm sàn.
 - Chưa mô phỏng order book, tick/step size, min notional, partial fills, funding thực tế và gián đoạn sàn. SL/TP là ngưỡng do mô phỏng xử lý, chưa phải lệnh điều kiện đặt trên Binance.
 - Ngưỡng 200 USDT là điều kiện kích hoạt đóng, không phải mức tiền còn lại được bảo đảm nếu giá nhảy. Mục tiêu tăng từ 500 lên 1.000 USDT cũng không được bảo đảm.
 
-Các bước để nối Binance Futures Testnet và sau đó giao dịch thật được ghi ở [docs/binance-integration.md](docs/binance-integration.md).
+Chi tiết kết nối Demo đã triển khai, các giới hạn và phần chưa xác minh được ghi ở [docs/binance-integration.md](docs/binance-integration.md).

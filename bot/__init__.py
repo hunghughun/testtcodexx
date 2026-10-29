@@ -1,1 +1,1 @@
-"""A locally operated, simulated trading workbench. No exchange order access."""
+"""Local Futures simulator and Binance Demo connector; production trading disabled."""

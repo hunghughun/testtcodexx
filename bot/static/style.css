@@ -101,3 +101,13 @@ footer span { max-width:800px; }
   .chart-top .legend { display:none; }
   #chart { height:200px; }
 }
+.top-links { display:flex; flex-wrap:wrap; gap:18px; }
+.connection-panel { margin-bottom:20px; }
+.connection-panel form,.demo-controls { padding:0 18px 18px; }
+.demo-metrics { grid-template-columns:repeat(3,minmax(0,1fr)); }
+select { width:100%; min-width:0; padding:9px; border:1px solid #b8c1cc; border-radius:4px; background:white; color:var(--text); font:inherit; }
+select:disabled { color:#68717c; background:#f3f4f6; }
+.check-label { display:flex; flex-direction:row; align-items:flex-start; gap:9px; }
+.check-label input { width:17px; height:17px; flex-shrink:0; margin-top:4px; }
+.vertical-actions { flex-direction:column; }
+@media(max-width:600px) { .demo-metrics { grid-template-columns:1fr; } .top-links { gap:8px; } }

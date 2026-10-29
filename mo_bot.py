@@ -1,4 +1,4 @@
-"""Open the local simulation UI. This launcher never starts a trading session."""
+"""Open the local simulator and Binance Demo UI. This launcher never starts a trading session."""
 import argparse
 import hashlib
 import json
@@ -81,7 +81,7 @@ def main():
     except OSError:
         pass
     python = prepare_python()
-    print("Đang mở bot mô phỏng. Không đăng nhập Binance, không giao dịch tiền thật.", flush=True)
+    print("Đang mở bot mô phỏng / Binance Demo. Không giao dịch tiền thật.", flush=True)
     process = subprocess.Popen([str(python), "-m", "uvicorn", "bot.web:create_app", "--factory",
                                 "--host", "127.0.0.1", "--port", str(args.port)], cwd=ROOT)
     try:

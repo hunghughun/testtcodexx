@@ -1,0 +1,530 @@
+"""Persistent, single-process Binance Demo session coordinator.
+
+Credentials stay in memory. All exchange writes have a durable intent; uncertain
+writes are queried by ID, never blindly retried. A dedicated Demo account is required.
+"""
+import copy
+from decimal import Decimal as D
+import json
+from pathlib import Path
+import sqlite3
+import threading
+import time
+from typing import Literal
+import uuid
+
+from pydantic import BaseModel, ConfigDict, SecretStr, field_validator
+from .models import SessionConfig
+from .engine import now
+from .binance import BinanceDemo, ExchangeError, SymbolRules, number, decimal_text
+
+TERMINAL = {'FILLED','CANCELED','CANCELLED','EXPIRED','REJECTED','EXPIRED_IN_MATCH'}
+ALGO_TERMINAL = {'CANCELED','CANCELLED','EXPIRED','REJECTED','FINISHED'}
+
+
+class OrderBlocked(ExchangeError):
+    """An expected order constraint; existing protected positions can keep running."""
+
+
+class DemoConfig(SessionConfig):
+    strategy: Literal['manual','sma'] = 'manual'
+
+
+class DemoCredentials(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    api_key: SecretStr
+    api_secret: SecretStr
+
+    @field_validator('api_key','api_secret')
+    @classmethod
+    def validate_secret(cls, value):
+        raw=value.get_secret_value().strip()
+        if not 16 <= len(raw) <= 256 or not raw.isascii() or not raw.isalnum():
+            raise ValueError('Cần khóa API HMAC Demo, gồm chữ/số và không có khoảng trắng.')
+        return SecretStr(raw)
+
+
+def initial():
+    return dict(status='idle', config=DemoConfig().model_dump(mode='json'), run_id=None,
+                fingerprint=None, started_ms=0, operations={}, positions={}, trades=[], funding=[],
+                trade_cursors={}, funding_cursor=0, last_candle={}, manual_requests=[], seq=0,
+                equity='500', net='0', error=None, events=[], updated_at=now(), waiting=False,
+                finish_status=None, fee_rates={}, brackets={})
+
+
+class DemoService:
+    def __init__(self, db_path, client_factory=BinanceDemo):
+        self.db_path=str(db_path)
+        Path(db_path).parent.mkdir(parents=True,exist_ok=True)
+        self.lock=threading.RLock()
+        self.client_factory=client_factory
+        self.client=None
+        self.account_summary=None
+        self.rules={}
+        self._storage_error=False
+        with self.db() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS demo_runtime (id INTEGER PRIMARY KEY, state TEXT NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS demo_archives (id INTEGER PRIMARY KEY, state TEXT NOT NULL)')
+            row=db.execute('SELECT state FROM demo_runtime WHERE id=1').fetchone()
+            self.s=json.loads(row[0]) if row else initial()
+        if self.s['status'] in {'running','stopping'}:
+            self.s['status']='paused'
+            self.s['error']='Ứng dụng đã khởi động lại. Nhập lại cùng khóa Demo rồi tiếp tục/đóng phiên để đối soát lệnh.'
+        self.save()
+
+    def db(self): return sqlite3.connect(self.db_path,timeout=10)
+
+    def save(self):
+        if self._storage_error:
+            raise ExchangeError('Lỗi lưu dữ liệu. Khởi động lại ứng dụng và kiểm tra lệnh trên Binance Demo.')
+        try:
+            self.s['updated_at']=now()
+            with self.db() as db:
+                db.execute('INSERT OR REPLACE INTO demo_runtime(id,state) VALUES(1,?)',(json.dumps(self.s),))
+        except (OSError,sqlite3.Error):
+            self._storage_error=True
+            self.s['status']='paused'
+            self.s['error']='Không lưu được ý định lệnh; đã ngừng gửi yêu cầu giao dịch.'
+            raise ExchangeError(self.s['error']) from None
+
+    def event(self,message):
+        self.s['events'].append({'at':now(),'message':message})
+        self.s['events']=self.s['events'][-100:]
+
+    def pause(self,message):
+        self.s['status']='paused'
+        self.s['error']=message
+        self.event(message)
+        self.save()
+
+    def snapshot(self):
+        with self.lock:
+            state=copy.deepcopy(self.s)
+            state.pop('fingerprint',None)
+            state.update(connected=self.client is not None, account=self.account_summary,
+                         mode='binance_demo', live_trading=False, endpoint='demo-fapi.binance.com')
+            return state
+
+    @staticmethod
+    def usdt(account):
+        asset=next((a for a in account['assets'] if a['asset']=='USDT'),None)
+        if not asset: raise ExchangeError('Tài khoản Demo chưa có tài sản USDT.')
+        return asset
+
+    def ensure_modes(self,client):
+        if client.get('/fapi/v1/positionSide/dual').get('dualSidePosition') is not False:
+            raise ExchangeError('Cần chuyển tài khoản Demo sang One-way Mode trên Binance trước.')
+        if client.get('/fapi/v1/multiAssetsMargin').get('multiAssetsMargin') is not False:
+            raise ExchangeError('Cần dùng Single-Asset Mode (USDT) trên Binance Demo.')
+
+    def verify_symbol_settings(self,symbol,leverage):
+        rows=self.required().get('/fapi/v1/symbolConfig',symbol=symbol)
+        row=next((x for x in rows if x['symbol']==symbol),{})
+        if row.get('marginType')!='ISOLATED' or int(row.get('leverage',0))!=leverage or str(row.get('isAutoAddMargin')).lower()!='false':
+            raise ExchangeError('Cần isolated đúng đòn bẩy và tắt Auto-add Margin trên Binance Demo.')
+
+    def connect(self,credentials):
+        with self.lock:
+            client=self.client_factory(credentials.api_key.get_secret_value(),credentials.api_secret.get_secret_value())
+            if self.s['status'] in {'running','paused','stopping'} and self.s['fingerprint'] and client.fingerprint!=self.s['fingerprint']:
+                raise ExchangeError('Phiên chưa kết thúc: cần kết nối lại cùng API Key Demo đã mở phiên.')
+            client.sync_time()
+            account=client.account()
+            if account.get('canTrade') is not True: raise ExchangeError('Khóa Demo chưa có quyền giao dịch Futures.')
+            self.ensure_modes(client)
+            asset=self.usdt(account)
+            positions=client.positions()
+            if self.s['fingerprint'] and self.s['fingerprint']!=client.fingerprint:
+                # A completed session may switch account without querying its old IDs
+                # against the new account. Preserve that completed history locally.
+                state=initial()
+                with self.db() as db:
+                    db.execute('INSERT INTO demo_archives(state) VALUES(?)',(json.dumps(self.s),))
+                    db.execute('INSERT OR REPLACE INTO demo_runtime(id,state) VALUES(1,?)',(json.dumps(state),))
+                self.s=state
+            self.client=client
+            self.account_summary={'wallet':str(number(asset['walletBalance'])),
+                                  'available':str(number(asset['availableBalance'])),
+                                  'open_positions':sum(number(p['positionAmt'])!=0 for p in positions),'checked_at':now()}
+            self.event('Đã kiểm tra kết nối Binance Demo bằng yêu cầu chỉ đọc. Chưa bắt đầu giao dịch.')
+            self.save()
+            return self.snapshot()
+
+    def required(self):
+        if not self.client: raise ExchangeError('Nhập khóa Demo và kiểm tra kết nối trước.')
+        if self._storage_error: raise ExchangeError('Dữ liệu chưa lưu được; cần khởi động lại và đối soát.')
+        return self.client
+
+    def load_rules(self,config):
+        symbols={s['symbol']:s for s in self.required().exchange_info()['symbols']}
+        rules={}
+        for symbol in config.symbols:
+            if symbol not in symbols: raise ExchangeError(f'{symbol} không tồn tại trên Binance Demo.')
+            rules[symbol]=SymbolRules(symbols[symbol])
+        self.rules=rules
+
+    def start(self,config):
+        with self.lock:
+            c=self.required()
+            if self.s['status'] in {'running','stopping'}: raise ExchangeError('Phiên Demo đang hoạt động.')
+            if self.s['status']=='paused': raise ExchangeError('Tiếp tục hoặc đóng phiên đang tạm dừng trước khi tạo phiên mới.')
+            self.ensure_modes(c)
+            if any(number(p['positionAmt'])!=0 for p in c.positions()) or c.orders() or c.algos():
+                raise ExchangeError('Cần tài khoản Demo riêng, không có vị thế hoặc lệnh chờ trước khi bắt đầu.')
+            account=c.account()
+            if number(self.usdt(account)['availableBalance']) < config.capital:
+                raise ExchangeError('USDT khả dụng trên Demo nhỏ hơn vốn bạn cấp cho bot.')
+            self.load_rules(config)
+            fees={}
+            for symbol in config.symbols:
+                mark=c.mark(symbol)
+                self.rules[symbol].quantity(config.order_budget,config.leverage,mark)
+                for side in ['LONG','SHORT']:
+                    self.rules[symbol].triggers(mark,side,config.stop_loss_pct,config.take_profit_pct)
+                fees[symbol]=str(number(c.get('/fapi/v1/commissionRate',symbol=symbol)['takerCommissionRate']))
+                if not D(0) <= number(fees[symbol]) <= D('.01'): raise ExchangeError('Mức phí tài khoản không hợp lệ.')
+                try: c.post('/fapi/v1/marginType',symbol=symbol,marginType='ISOLATED')
+                except ExchangeError as exc:
+                    if exc.code!=-4046: raise
+                result=c.post('/fapi/v1/leverage',symbol=symbol,leverage=config.leverage)
+                if int(result['leverage'])!=config.leverage: raise ExchangeError('Sàn chưa xác nhận đúng đòn bẩy.')
+                self.verify_symbol_settings(symbol,config.leverage)
+            state=initial()
+            state.update(config=config.model_dump(mode='json'),run_id=uuid.uuid4().hex[:12],
+                         fingerprint=c.fingerprint,started_ms=c.sync_time(),equity=str(config.capital),fee_rates=fees,status='running')
+            with self.db() as db:
+                if self.s['run_id']: db.execute('INSERT INTO demo_archives(state) VALUES(?)',(json.dumps(self.s),))
+                db.execute('INSERT OR REPLACE INTO demo_runtime(id,state) VALUES(1,?)',(json.dumps(state),))
+            self.s=state
+            self.event('Phiên Binance Demo bắt đầu. Chỉ dùng tiền thử; tài khoản dành riêng cho bot.')
+            self.save()
+            return self.snapshot()
+
+    def _update_op(self,op):
+        if op.get('status') in (ALGO_TERMINAL if op['algo'] else TERMINAL): return
+        result=self.required().query(op['symbol'],op['client_id'],op['algo'])
+        op.update(response=result,status=result.get('algoStatus' if op['algo'] else 'status','UNKNOWN'))
+        self.save()
+
+    def _send(self,kind,symbol,params):
+        self.s['seq']+=1
+        client_id=f"tpd_{self.s['run_id']}_{self.s['seq']}"
+        algo=kind in {'sl','tp'}
+        params={**params,('clientAlgoId' if algo else 'newClientOrderId'):client_id,'symbol':symbol}
+        op=dict(client_id=client_id,kind=kind,symbol=symbol,algo=algo,params=params,status='UNKNOWN',response={})
+        self.s['operations'][client_id]=op
+        self.save()  # If this fails, no order may be sent.
+        try:
+            result=self.required().post('/fapi/v1/algoOrder' if algo else '/fapi/v1/order',**params)
+        except ExchangeError as exc:
+            try:
+                self._update_op(op)
+                return op
+            except ExchangeError:
+                if not exc.uncertain:
+                    op['status']='REJECTED'
+                    self.save()
+                raise ExchangeError(str(exc)+' Cần đối soát mã lệnh đã lưu; không gửi lại tự động.',uncertain=exc.uncertain) from None
+        op.update(response=result,status=result.get('algoStatus' if algo else 'status','UNKNOWN'))
+        if not result.get('algoId' if algo else 'orderId'):
+            self.save()
+            raise ExchangeError('Sàn chưa xác nhận mã lệnh; cần đối soát.',uncertain=True)
+        self.save()
+        return op
+
+    def _cancel(self,op):
+        terminal=ALGO_TERMINAL if op['algo'] else TERMINAL
+        if op['status'] in terminal: return
+        try:
+            if op['algo']: self.required().delete('/fapi/v1/algoOrder',clientAlgoId=op['client_id'])
+            else: self.required().delete('/fapi/v1/order',symbol=op['symbol'],origClientOrderId=op['client_id'])
+        except ExchangeError as exc:
+            if exc.code not in {-2011,-2013}: raise
+        self._update_op(op)
+        if op['status'] not in terminal:
+            raise ExchangeError('Chưa xác nhận lệnh đã hủy/hoàn tất. Đã ngừng mở lệnh mới.')
+
+    def _reconcile_operations(self, relaxed_algos=False):
+        for op in list(self.s['operations'].values()):
+            try:
+                self._update_op(op)
+            except ExchangeError:
+                if not (relaxed_algos and op['algo'] and op['status']=='UNKNOWN'): raise
+                continue
+            actual=op['response'].get('actualOrderId') if op['algo'] else None
+            if actual and str(actual)!='0':
+                key=op['client_id']+'.fill'
+                existing=self.s['operations'].get(key)
+                if existing and existing['status'] in TERMINAL: continue
+                result=self.required().get('/fapi/v1/order',symbol=op['symbol'],orderId=actual)
+                self.s['operations'][key]=dict(client_id=result['clientOrderId'],kind='exit',symbol=op['symbol'],
+                    algo=False,params={'side':op['params']['side']},status=result['status'],response=result)
+                self.save()
+
+    def _refresh(self, relaxed_algos=False):
+        c=self.required()
+        self._reconcile_operations(relaxed_algos)
+        known_ids={str(op['response']['orderId']) for op in self.s['operations'].values() if not op['algo'] and op['response'].get('orderId')}
+        expected={}
+        for op in self.s['operations'].values():
+            if not op['algo']:
+                amount=number(op['response'].get('executedQty',0))*(1 if op['params'].get('side')=='BUY' else -1)
+                expected[op['symbol']]=expected.get(op['symbol'],D(0))+amount
+        positions={}
+        for row in c.positions():
+            amount=number(row['positionAmt'])
+            if not amount: continue
+            if row.get('positionSide')!='BOTH' or amount!=expected.get(row['symbol'],D(0)):
+                raise ExchangeError('Vị thế trên Demo không khớp lệnh của bot. Kiểm tra lệnh tay/bot khác trước khi tiếp tục.')
+            mark=c.mark(row['symbol'])
+            positions[row['symbol']]={'side':'LONG' if amount>0 else 'SHORT','quantity':str(abs(amount)),
+                'entry':str(number(row['entryPrice'])),'mark':str(mark),
+                'margin':str(number(row['isolatedWallet'])),'unrealized':str(amount*(mark-number(row['entryPrice'])))}
+        if any(q and symbol not in positions for symbol,q in expected.items()):
+            raise ExchangeError('Số lượng vị thế chưa đồng bộ với lệnh. Hãy đối soát trước khi tiếp tục.')
+        self.s['positions']=positions
+        ours={op['client_id'] for op in self.s['operations'].values()}
+        if any(o.get('clientOrderId') not in ours for o in c.orders()) or any(o.get('clientAlgoId') not in ours for o in c.algos()):
+            raise ExchangeError('Phát hiện lệnh chờ ngoài phiên bot; cần tài khoản Demo riêng.')
+        for symbol in self.s['config']['symbols']:
+            cursor=self.s['trade_cursors'].get(symbol)
+            params={'symbol':symbol,'limit':1000}
+            params.update({'fromId':cursor+1} if cursor is not None else {'startTime':self.s['started_ms']})
+            trades=c.get('/fapi/v1/userTrades',**params)
+            if len(trades)>=1000: raise ExchangeError('Quá nhiều giao dịch chưa đối soát; cần kiểm tra lịch sử trên sàn.')
+            for trade in sorted(trades,key=lambda x:int(x['id'])):
+                if str(trade['orderId']) not in known_ids:
+                    raise ExchangeError('Phát hiện giao dịch ngoài bot trên cặp đang quản lý; đã tạm dừng.')
+                if trade['commissionAsset']!='USDT': raise ExchangeError('Chưa hỗ trợ trả phí bằng tài sản khác USDT.')
+                clean={k:trade[k] for k in ['id','orderId','symbol','side','qty','price','commission','realizedPnl','time']}
+                for k in ['qty','price','commission','realizedPnl']: clean[k]=str(number(clean[k]))
+                self.s['trades'].append(clean)
+                self.s['trade_cursors'][symbol]=int(trade['id'])
+        funding=c.get('/fapi/v1/income',incomeType='FUNDING_FEE',startTime=self.s['funding_cursor'] or self.s['started_ms'],limit=1000)
+        if len(funding)>=1000: raise ExchangeError('Quá nhiều kỳ funding chưa đối soát; cần kiểm tra lịch sử.')
+        seen={(str(f['tranId']),f['symbol']) for f in self.s['funding']}
+        for f in funding:
+            if f['asset']!='USDT': raise ExchangeError('Funding không phải USDT chưa được hỗ trợ.')
+            if f['symbol'] in self.s['config']['symbols'] and (str(f['tranId']),f['symbol']) not in seen:
+                self.s['funding'].append({'tranId':str(f['tranId']),'symbol':f['symbol'],'income':str(number(f['income'])),'time':int(f['time'])})
+                seen.add((str(f['tranId']),f['symbol']))
+            self.s['funding_cursor']=max(self.s['funding_cursor'],int(f['time']))
+        filled={}
+        for t in self.s['trades']: filled[str(t['orderId'])]=filled.get(str(t['orderId']),D(0))+number(t['qty'])
+        self.s['waiting']=any(number(op['response'].get('executedQty',0))>filled.get(str(op['response'].get('orderId')),D(0))
+                              for op in self.s['operations'].values() if not op['algo'])
+        net=sum((number(t['realizedPnl'])-number(t['commission']) for t in self.s['trades']),D(0))+sum((number(f['income']) for f in self.s['funding']),D(0))
+        close_cost=sum((number(p['quantity'])*number(p['mark'])*(number(self.s['fee_rates'][sym])+number(self.s['config']['slippage_bps'])/10000)
+                        for sym,p in positions.items()),D(0))
+        self.s['net']=str(net)
+        self.s['equity']=str(number(self.s['config']['capital'])+net+sum((number(p['unrealized']) for p in positions.values()),D(0))-close_cost)
+        asset=self.usdt(c.account())
+        self.account_summary={'wallet':str(number(asset['walletBalance'])),'available':str(number(asset['availableBalance'])),
+                              'open_positions':len(positions),'checked_at':now()}
+        self.save()
+
+    def refresh(self):
+        with self.lock:
+            self.required()
+            if self.s['run_id']:
+                try: self._refresh()
+                except ExchangeError as exc:
+                    self.pause(str(exc)); raise
+            else:
+                asset=self.usdt(self.client.account())
+                self.account_summary={'wallet':str(number(asset['walletBalance'])),'available':str(number(asset['availableBalance'])),
+                                      'open_positions':sum(number(p['positionAmt'])!=0 for p in self.client.positions()),'checked_at':now()}
+            return self.snapshot()
+
+    def _cleanup(self):
+        for op in list(self.s['operations'].values()):
+            if op['algo'] and op['symbol'] not in self.s['positions']:
+                self._cancel(op)
+        for symbol,bracket in list(self.s['brackets'].items()):
+            if symbol not in self.s['positions']:
+                del self.s['brackets'][symbol]
+                self.save()
+
+    def _protect(self,symbol,entry_op):
+        config=DemoConfig(**self.s['config'])
+        response=entry_op['response']
+        qty=number(response['executedQty'])
+        entry=number(response['avgPrice'])
+        if qty<=0 or entry<=0: raise ExchangeError('Không có giá/số lượng khớp hợp lệ để đặt SL/TP.')
+        side='LONG' if entry_op['params']['side']=='BUY' else 'SHORT'
+        stop,take=self.rules[symbol].triggers(entry,side,config.stop_loss_pct,config.take_profit_pct)
+        bracket=self.s['brackets'].setdefault(symbol,{'entry':entry_op['client_id']})
+        for kind,order_type,price in [('sl','STOP_MARKET',stop),('tp','TAKE_PROFIT_MARKET',take)]:
+            # Recover acknowledged protection by its persisted intent after a crash.
+            if bracket.get(kind): continue
+            op=self._send(kind,symbol,{'algoType':'CONDITIONAL','type':order_type,'side':'SELL' if side=='LONG' else 'BUY',
+                     'quantity':decimal_text(qty),'triggerPrice':decimal_text(price),'reduceOnly':'true','workingType':'MARK_PRICE'})
+            bracket[kind]=op['client_id']
+            self.save()
+            if op['status']!='NEW': raise ExchangeError('SL/TP chưa ở trạng thái chờ bảo vệ; cần đóng/đối soát vị thế.')
+        self.event(f'Đã đặt SL/TP trên Binance Demo cho {symbol}.')
+        self.save()
+
+    def _open(self,symbol,side):
+        config=DemoConfig(**self.s['config'])
+        if symbol not in config.symbols or side not in {'LONG','SHORT'}: raise OrderBlocked('Cặp hoặc chiều lệnh không được phép.')
+        if symbol in self.s['positions']: raise OrderBlocked('Cặp này đã có vị thế của bot.')
+        if self.s['waiting']: raise OrderBlocked('Đang chờ lịch sử khớp lệnh đồng bộ; chưa mở lệnh mới.')
+        self.ensure_modes(self.required())
+        self.verify_symbol_settings(symbol,config.leverage)
+        mark=self.required().mark(symbol)
+        qty=self.rules[symbol].quantity(config.order_budget,config.leverage,mark)
+        self.rules[symbol].triggers(mark,side,config.stop_loss_pct,config.take_profit_pct)
+        used=sum((number(p['quantity'])*number(p['mark'])/config.leverage for p in self.s['positions'].values()),D(0))
+        reserve=qty*mark/config.leverage+qty*mark*number(self.s['fee_rates'][symbol])*2
+        # Unrealized gains must not authorize collateral from the rest of the wallet.
+        collateral=min(number(self.s['equity']),config.capital+number(self.s['net']))
+        if collateral-used<reserve or number(self.account_summary['available'])<reserve:
+            raise OrderBlocked('Vốn của phiên hoặc USDT khả dụng không đủ cho lệnh và phí.')
+        op=self._send('entry',symbol,{'side':'BUY' if side=='LONG' else 'SELL','type':'MARKET',
+                                     'quantity':decimal_text(qty),'newOrderRespType':'RESULT'})
+        if op['status'] not in TERMINAL:
+            self._cancel(op)
+        if number(op['response'].get('executedQty',0)):
+            self.s['brackets'][symbol]={'entry':op['client_id']}
+            self.save()
+            try: self._protect(symbol,op)
+            except ExchangeError:
+                self.s['finish_status']='stopped'
+                self.s['status']='stopping'
+                self.save()
+                try: self._flatten()
+                except ExchangeError: pass
+                raise ExchangeError('Không xác nhận được đủ SL/TP. Đã yêu cầu đóng vị thế; kiểm tra trạng thái và đối soát trước khi chạy tiếp.') from None
+        else: raise ExchangeError('Lệnh mở không khớp; không tạo vị thế mới.')
+        self.event(f'Đã gửi {side} {symbol} trên Demo.')
+        self._refresh()
+        self._limits()
+
+    def manual_order(self,symbol,side,request_id):
+        with self.lock:
+            self.required()
+            if request_id in self.s['manual_requests']: return self.snapshot()
+            if self.s['status']!='running' or self.s['config']['strategy']!='manual':
+                raise ExchangeError('Cần bắt đầu phiên Demo ở chế độ kiểm tra thủ công.')
+            self.s['manual_requests'].append(request_id)
+            self.save()
+            try:
+                self._refresh(); self._cleanup()
+                if self._limits(): return self.snapshot()
+                self._open(symbol,side)
+            except OrderBlocked:
+                raise
+            except ExchangeError as exc:
+                self.pause(str(exc)); raise
+            return self.snapshot()
+
+    def _flatten(self,only_symbol=None):
+        # Cancel unfilled entry orders first; retain protection until flat is confirmed.
+        for op in list(self.s['operations'].values()):
+            if op['kind']=='entry' and op['status'] not in TERMINAL and (not only_symbol or op['symbol']==only_symbol): self._cancel(op)
+        self._refresh(relaxed_algos=True)
+        for symbol,p in list(self.s['positions'].items()):
+            if only_symbol and symbol!=only_symbol: continue
+            op=self._send('close',symbol,{'side':'SELL' if p['side']=='LONG' else 'BUY','type':'MARKET',
+                                          'quantity':p['quantity'],'reduceOnly':'true','newOrderRespType':'RESULT'})
+            if op['status'] not in TERMINAL: self._cancel(op)
+        self._refresh(relaxed_algos=True)
+        if any(not only_symbol or s==only_symbol for s in self.s['positions']):
+            raise ExchangeError('Chưa xác nhận đóng hết vị thế. Kiểm tra trên Binance Demo rồi đối soát.')
+        self._cleanup()
+        if only_symbol: return
+        if self.s['waiting']: raise ExchangeError('Vị thế đã đóng nhưng đang chờ phí/lịch sử khớp đồng bộ; cần đối soát.')
+        for op in self.s['operations'].values():
+            if op['status'] not in (ALGO_TERMINAL if op['algo'] else TERMINAL):
+                raise ExchangeError('Còn lệnh chưa được đối soát; chưa thể xác nhận phiên đã dừng.')
+        status=self.s['finish_status'] or 'stopped'
+        if status=='target_reached' and number(self.s['equity'])<number(self.s['config']['target']): status='stopped'
+        self.s['status']=status
+        self.s['finish_status']=None
+        self.s['error']=None
+        self.event('Đã xác nhận hết vị thế/lệnh của phiên trên Demo.')
+        self.save()
+
+    def stop(self):
+        with self.lock:
+            self.required()
+            if self.s['status'] not in {'running','paused','stopping'}: return self.snapshot()
+            self.s['status']='stopping'; self.s['finish_status']=self.s['finish_status'] or 'stopped'
+            self.save()
+            try: self._flatten()
+            except ExchangeError as exc:
+                self.pause(str(exc)); raise
+            return self.snapshot()
+
+    def resume(self):
+        with self.lock:
+            self.required()
+            if self.s['status']!='paused': raise ExchangeError('Phiên không ở trạng thái tạm dừng.')
+            self.load_rules(DemoConfig(**self.s['config']))
+            try:
+                self._refresh()
+                if self.s['finish_status']:
+                    self._flatten(); return self.snapshot()
+                self._cleanup()
+                for symbol in self.s['positions']:
+                    bracket=self.s['brackets'].get(symbol)
+                    if not bracket: raise ExchangeError('Vị thế chưa có bộ SL/TP đã lưu. Bấm Dừng & đóng để kết thúc an toàn.')
+                    if not all(bracket.get(k) and self.s['operations'][bracket[k]]['status']=='NEW' for k in ['sl','tp']):
+                        raise ExchangeError('SL/TP chưa đầy đủ hoặc đã thay đổi. Bấm Dừng & đóng và kiểm tra trên sàn.')
+                if self.s['waiting']: raise ExchangeError('Lịch sử khớp/chi phí chưa đồng bộ. Thử đối soát lại sau.')
+                self.s['status']='running'; self.s['error']=None
+                self.save()
+            except ExchangeError as exc:
+                self.pause(str(exc)); raise
+            return self.snapshot()
+
+    def _limits(self):
+        if self.s['waiting']: return False
+        config=DemoConfig(**self.s['config'])
+        value=number(self.s['equity'])
+        status='target_reached' if value>=config.target else 'loss_limit' if value<=config.capital-config.max_loss else None
+        if not status: return False
+        self.s['status']='stopping'; self.s['finish_status']=status
+        self.save(); self._flatten()
+        return True
+
+    def tick(self):
+        with self.lock:
+            if not self.client or self.s['status']!='running' or self._storage_error: return
+            try:
+                self._refresh(); self._cleanup()
+                for symbol in self.s['positions']:
+                    bracket=self.s['brackets'].get(symbol,{})
+                    if not all(bracket.get(k) and self.s['operations'][bracket[k]]['status']=='NEW' for k in ['sl','tp']):
+                        self.s['finish_status']='stopped'; self.save()
+                        self._flatten()
+                        return
+                if self.s['waiting'] or self._limits() or self.s['config']['strategy']!='sma': return
+                for symbol in self.s['config']['symbols']:
+                    server_now=int(self.client._clock()*1000+self.client._offset)
+                    closed=[r for r in self.client.candles(symbol) if int(r[6])<server_now]
+                    if len(closed)<16: raise ExchangeError('Chưa đủ nến đã đóng để tính SMA.')
+                    rows=closed[-16:]
+                    if server_now-int(rows[-1][6])>120000 or any(int(b[0])-int(a[0])!=60000 for a,b in zip(rows,rows[1:])):
+                        raise ExchangeError('Dữ liệu nến bị cũ hoặc thiếu; đã tạm dừng mở lệnh.')
+                    stamp=int(rows[-1][6]); previous=self.s['last_candle'].get(symbol)
+                    if previous==stamp: continue
+                    self.s['last_candle'][symbol]=stamp; self.save()
+                    if previous is None: continue
+                    closes=[number(r[4]) for r in rows]
+                    if any(p<=0 for p in closes): raise ExchangeError('Giá nến không hợp lệ.')
+                    before=sum(closes[-6:-1])/5-sum(closes[-16:-1])/15
+                    after=sum(closes[-5:])/5-sum(closes[-15:])/15
+                    side='LONG' if before<=0<after else 'SHORT' if before>=0>after else None
+                    if not side: continue
+                    position=self.s['positions'].get(symbol)
+                    if position and position['side']==side: continue
+                    if position: self._flatten(only_symbol=symbol)
+                    if self.s['waiting'] or self._limits(): return
+                    self._open(symbol,side)
+                    if self.s['status']!='running': return
+            except OrderBlocked as exc:
+                self.event(str(exc)); self.save()
+            except ExchangeError as exc:
+                self.pause(str(exc))
