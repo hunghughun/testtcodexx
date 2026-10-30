@@ -6,6 +6,7 @@ writes are queried by ID, never blindly retried. A dedicated account is required
 import copy
 from decimal import Decimal as D
 import json
+import logging
 from pathlib import Path
 import sqlite3
 import threading
@@ -121,6 +122,27 @@ class FuturesService:
         self.s['error']=message
         self.event(message)
         self.save()
+
+    def system_error(self,exc,stage):
+        # Do not log exception messages, request URLs, locals or raw responses.
+        diagnostic={'id':uuid.uuid4().hex[:8],'at':now(),'stage':stage,
+                    'type':type(exc).__name__,'location':None}
+        tb=exc.__traceback__
+        while tb:
+            filename=Path(tb.tb_frame.f_code.co_filename)
+            if filename.parent.resolve()==Path(__file__).resolve().parent:
+                diagnostic['location']=f'{filename.name}:{tb.tb_lineno}:{tb.tb_frame.f_code.co_name}'
+            tb=tb.tb_next
+        self.s.setdefault('diagnostics',[]).append(diagnostic)
+        self.s['diagnostics']=self.s['diagnostics'][-10:]
+        logging.error('Futures diagnostic %s',json.dumps(diagnostic))
+        return ExchangeError(f"Lỗi xử lý {stage} ({diagnostic['type']}, mã {diagnostic['id']}). Kiểm tra vị thế và SL/TP trên Binance; chưa tự chạy tiếp.")
+
+    def handle_unexpected(self,exc,stage):
+        with self.lock:
+            error=self.system_error(exc,stage)
+            self.pause(str(error))
+            return error
 
     def snapshot(self):
         with self.lock:
@@ -363,7 +385,7 @@ class FuturesService:
     def refresh(self):
         with self.lock:
             self.required()
-            if self.s['run_id']:
+            if self.s['run_id'] and not self.s.get('closed_externally'):
                 try: self._refresh()
                 except ExchangeError as exc:
                     self.pause(str(exc)); raise
@@ -382,12 +404,45 @@ class FuturesService:
                 del self.s['brackets'][symbol]
                 self.save()
 
+    def _entry_fill(self,op):
+        def positive(value):
+            try:
+                value=number(value)
+                return value if value>0 else None
+            except ExchangeError:
+                return None
+
+        response=op['response']
+        qty=positive(response.get('executedQty'))
+        entry=positive(response.get('avgPrice'))
+        if qty is not None and entry is not None:
+            return qty,entry
+        # POST /order can omit avgPrice even when FILLED. GET the same order;
+        # never infer the execution price from mark/limit price or resend entry.
+        self.event(f"Đang lấy giá khớp của {op['symbol']} theo mã lệnh đã lưu để đặt SL/TP.")
+        self.save()
+        result=self.required().query(op['symbol'],op['client_id'])
+        if (not isinstance(result,dict) or result.get('symbol')!=op['symbol']
+                or result.get('clientOrderId')!=op['client_id']
+                or result.get('side')!=op['params']['side']
+                or str(result.get('orderId'))!=str(response.get('orderId'))):
+            raise ExchangeError('Kết quả tra cứu không khớp mã lệnh mở; chưa xác nhận được giá khớp.')
+        op.update(response=result,status=result.get('status','UNKNOWN'))
+        self.save()
+        if op['status'] not in TERMINAL:
+            raise ExchangeError('Lệnh mở chưa kết thúc sau khi tra cứu; chưa xác nhận đủ phần khớp.')
+        qty=positive(result.get('executedQty'))
+        entry=positive(result.get('avgPrice'))
+        quote=positive(result.get('cumQuote'))
+        if entry is None and qty is not None and quote is not None:
+            entry=quote/qty
+        if qty is None or entry is None:
+            raise ExchangeError('Không lấy được giá/số lượng khớp hợp lệ sau khi tra cứu lệnh; không dùng giá mark để đoán SL/TP.')
+        return qty,entry
+
     def _protect(self,symbol,entry_op):
         config=FuturesConfig(**self.s['config'])
-        response=entry_op['response']
-        qty=number(response['executedQty'])
-        entry=number(response['avgPrice'])
-        if qty<=0 or entry<=0: raise ExchangeError('Không có giá/số lượng khớp hợp lệ để đặt SL/TP.')
+        qty,entry=self._entry_fill(entry_op)
         side='LONG' if entry_op['params']['side']=='BUY' else 'SHORT'
         stop,take=self.rules[symbol].triggers(entry,side,config.stop_loss_pct,config.take_profit_pct)
         bracket=self.s['brackets'].setdefault(symbol,{'entry':entry_op['client_id']})
@@ -424,17 +479,25 @@ class FuturesService:
                                      'quantity':decimal_text(qty),'newOrderRespType':'RESULT'})
         if op['status'] not in TERMINAL:
             self._cancel(op)
-        if number(op['response'].get('executedQty',0)):
+        try: filled_qty=number(op['response'].get('executedQty'))
+        except ExchangeError: filled_qty=None
+        if filled_qty is None or filled_qty>0 or op['status']=='FILLED':
             self.s['brackets'][symbol]={'entry':op['client_id']}
             self.save()
             try: self._protect(symbol,op)
-            except ExchangeError:
+            except Exception as exc:
+                reason=exc if isinstance(exc,ExchangeError) else self.system_error(exc,'đặt SL/TP sau khi khớp')
                 self.s['finish_status']='stopped'
                 self.s['status']='stopping'
                 self.save()
-                try: self._flatten()
-                except ExchangeError: pass
-                raise ExchangeError('Không xác nhận được đủ SL/TP. Đã yêu cầu đóng vị thế; kiểm tra trạng thái và đối soát trước khi chạy tiếp.') from None
+                try:
+                    self._flatten()
+                    outcome='Đã xác nhận đóng hết vị thế và lệnh của phiên.'
+                except Exception as close_exc:
+                    if not isinstance(close_exc,ExchangeError):
+                        self.system_error(close_exc,'đóng khẩn cấp sau lỗi SL/TP')
+                    outcome='CHƯA xác nhận đóng hết. Kiểm tra và xử lý vị thế ngay trên Binance.'
+                raise ExchangeError(f'Không xác nhận được đủ SL/TP. {outcome} Nguyên nhân: {reason}') from None
         else: raise ExchangeError('Lệnh mở không khớp; không tạo vị thế mới.')
         self.event(f'Đã gửi {side} {symbol} trên {self.label}.')
         self._refresh()
@@ -456,6 +519,8 @@ class FuturesService:
                 raise
             except ExchangeError as exc:
                 self.pause(str(exc)); raise
+            except Exception as exc:
+                raise self.handle_unexpected(exc,'đặt lệnh thủ công') from None
             return self.snapshot()
 
     def _flatten(self,only_symbol=None):
@@ -494,6 +559,34 @@ class FuturesService:
             try: self._flatten()
             except ExchangeError as exc:
                 self.pause(str(exc)); raise
+            return self.snapshot()
+
+    def finish_external_close(self,confirmed=False):
+        """Read-only recovery after the operator closed directly on Binance.
+
+        Keep the incident/history. Never guess final PnL or silently turn manual
+        trades into bot fills. Only unlock a new session after verified flatness.
+        """
+        with self.lock:
+            c=self.required()
+            if confirmed is not True:
+                raise ExchangeError('Cần xác nhận đã đóng vị thế và hủy lệnh còn lại trực tiếp trên Binance.')
+            if self.s['status']!='paused' or not self.s['run_id']:
+                raise ExchangeError('Chỉ dùng bước này cho phiên đã tạm dừng sau sự cố.')
+            self._reconcile_operations()
+            for op in self.s['operations'].values():
+                if (op['status'] not in (ALGO_TERMINAL if op['algo'] else TERMINAL)
+                        or (not op['response'].get('algoId' if op['algo'] else 'orderId') and op['status']!='REJECTED')):
+                    raise ExchangeError('Còn mã lệnh chưa xác minh; không thể kết thúc phiên bằng bước xác nhận đóng ngoài bot.')
+            if any(number(p['positionAmt'])!=0 for p in c.positions()) or c.orders() or c.algos():
+                raise ExchangeError('Binance vẫn còn vị thế hoặc lệnh chờ. Chưa thể xác nhận tài khoản đã trống.')
+            asset=self.usdt(c.account())
+            self.account_summary={'wallet':str(number(asset['walletBalance'])),'available':str(number(asset['availableBalance'])),
+                                  'open_positions':0,'checked_at':now()}
+            self.s.update(status='stopped',closed_externally=True,positions={},brackets={},waiting=False,
+                          finish_status=None,error=None,equity=None,net=None)
+            self.event('Đã kiểm tra tài khoản không còn vị thế/lệnh sau khi xử lý trực tiếp trên Binance. Phiên kết thúc; lãi/lỗ cuối chưa đối soát, không đánh dấu đạt mục tiêu. Lịch sử sự cố được giữ lại.')
+            self.save()
             return self.snapshot()
 
     def resume(self):
@@ -569,6 +662,8 @@ class FuturesService:
                 self.event(str(exc)); self.save()
             except ExchangeError as exc:
                 self.pause(str(exc))
+            except Exception as exc:
+                self.handle_unexpected(exc,'vòng theo dõi tự động')
 
 
 class DemoService(FuturesService):

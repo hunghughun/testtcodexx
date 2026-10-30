@@ -90,6 +90,17 @@ with tempfile.TemporaryDirectory() as temp:
             expect(page.locator('#live-status')).to_have_text('tiền thật đã dừng')
             expect(page.locator('#live-count')).to_have_text('0')
             expect(page.locator('#live-start')).to_be_disabled()
+            response=page.request.post('http://127.0.0.1:8003/test/closed-incident',data={})
+            assert response.ok
+            page.reload()
+            expect(page.locator('#live-incident')).to_be_visible()
+            expect(page.locator('#live-finish-external')).to_be_enabled()
+            page.once('dialog',lambda dialog:dialog.accept())
+            page.locator('#live-finish-external').click()
+            expect(page.locator('#live-status')).to_have_text('tiền thật đã dừng')
+            expect(page.locator('#live-equity')).to_have_text('—')
+            expect(page.locator('#live-pnl')).to_contain_text('lãi/lỗ cuối chưa đối soát')
+            expect(page.locator('#live-incident')).to_be_hidden()
             assert not errors,errors
             assert page.evaluate('Object.keys(localStorage).length')==0
             for path in Path(temp).glob('*.sqlite3'):

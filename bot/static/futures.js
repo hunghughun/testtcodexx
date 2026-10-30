@@ -6,7 +6,7 @@ const apiBase='/api/'+mode;
 const el=id=>document.getElementById(id.replace(/^demo-/,mode+'-'));
 const confirmation=()=>isLive?el('live-confirmation').value:'';
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const format=n=>Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4});
+const format=n=>n===null?'—':Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4});
 const labels={idle:'Chưa bắt đầu',running:`Đang chạy ${modeLabel}`,paused:`${modeLabel} đã tạm dừng`,stopping:'Đang đóng và đối soát',stopped:`${modeLabel} đã dừng`,target_reached:`Đạt mục tiêu phiên ${modeLabel}`,loss_limit:'Chạm ngưỡng lỗ'};
 let state=null,busy=false,hydrated=false,dirty=false;
 const configForm=el('demo-config');
@@ -33,6 +33,7 @@ function controls(){
   el('demo-refresh').disabled=busy||!connected;
   el('demo-stop').disabled=busy||!connected||!active;
   el('demo-resume').disabled=busy||!connected||state?.status!=='paused'||!confirmed;
+  el('demo-finish-external').disabled=busy||!connected||state?.status!=='paused';
   if(isLive)el('live-confirmation').disabled=busy||state?.status==='running';
   const manual=connected&&state.status==='running'&&state.config.strategy==='manual'&&!state.waiting;
   el('demo-long').disabled=el('demo-short').disabled=busy||!manual;
@@ -48,11 +49,13 @@ function render(s){
   el('demo-status').textContent=labels[s.status]||s.status;
   el('demo-connection').textContent=s.connected?`Đã kết nối Binance ${modeLabel}`:'Chưa kết nối';
   el('demo-equity').textContent=format(s.equity);
-  el('demo-pnl').textContent=`Lãi/lỗ đã chốt sau phí và funding: ${format(s.net)} USDT`;
+  el('demo-pnl').textContent=s.closed_externally?'Đã xử lý trực tiếp trên Binance; lãi/lỗ cuối chưa đối soát.':`Lãi/lỗ đã chốt sau phí và funding: ${format(s.net)} USDT`;
   el('demo-available').textContent=s.account?format(s.account.available):'—';
   el('demo-count').textContent=Object.keys(s.positions).length;
   el('demo-updated').textContent=s.account?`Đối soát: ${new Date(s.account.checked_at).toLocaleTimeString('vi-VN')}`:'Chưa cập nhật';
   el('demo-sync').textContent=s.waiting?'Đang chờ lịch sử khớp/chi phí đồng bộ; chưa mở lệnh mới.':s.error||'';
+  el('demo-incident').hidden=!s.error;
+  el('demo-incident').textContent=s.error?`${s.error} Tạm dừng không có nghĩa vị thế đã đóng. Kiểm tra Positions và TP/SL trong Binance trước khi tiếp tục.`:'';
   const selected=el('demo-symbol').value;
   el('demo-symbol').innerHTML=s.config.symbols.map(x=>`<option>${esc(x)}</option>`).join('');
   if(s.config.symbols.includes(selected))el('demo-symbol').value=selected;
@@ -82,6 +85,10 @@ configForm.addEventListener('submit',e=>{
   command(apiBase+'/start',{config,...(isLive?{confirm_live:confirmation()}:{confirm_demo:el('confirm-demo').checked})});
 });
 for(const [id,path] of [['demo-refresh','refresh'],['demo-stop','stop'],['demo-resume','resume']])el(id).addEventListener('click',()=>command(apiBase+'/'+path,isLive&&path==='resume'?{confirm_live:confirmation()}:{}));
+el('demo-finish-external').addEventListener('click',()=>{
+  if(window.confirm('Chỉ dùng sau khi bạn đã đóng vị thế và hủy lệnh còn lại trực tiếp trên Binance. Bot sẽ kiểm tra tài khoản đã trống, giữ lịch sử sự cố và đánh dấu lãi/lỗ cuối chưa đối soát. Tiếp tục kiểm tra?'))
+    command(apiBase+'/finish-external',{confirm_closed:true});
+});
 for(const side of ['LONG','SHORT'])el('demo-'+side.toLowerCase()).addEventListener('click',()=>command(apiBase+'/order',{symbol:el('demo-symbol').value,side,request_id:crypto.randomUUID()}));
 if(isLive)el('live-confirmation').addEventListener('input',controls);
 async function poll(){if(!busy){try{render(await api(apiBase+'/state'));}catch(e){showError(e.message);}}setTimeout(poll,3000);}

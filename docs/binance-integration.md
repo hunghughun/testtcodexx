@@ -44,6 +44,16 @@ Khởi động lại chuyển phiên đang chạy thành paused; nhập lại c�
 
 Nếu cần đối soát >=1.000 fill cho một cặp hoặc >=1.000 bản ghi funding một lần, phiên dừng để kiểm tra thay vì bỏ sót dữ liệu. Chưa hỗ trợ nhiều tiến trình cùng tài khoản, multi-account, đổi API Key giữa phiên hay thanh toán phí bằng coin khác USDT. Khóa DB tiền thật chặn tiến trình thứ hai; không có điều phối giữa nhiều máy. Thanh lý/ADL hoặc thao tác thủ công có thể làm đối soát không khớp và cần can thiệp trên Binance.
 
+## Xử lý phản hồi thiếu giá khớp và khôi phục sau sự cố (0.3.1)
+
+`POST /fapi/v1/order` không bảo đảm trường `avgPrice`. Trước đây `_protect` truy cập trực tiếp trường này; fixture cũng luôn trả nó, nên bỏ sót đường lỗi KeyError sau FILLED. Đã tái hiện bằng fake exchange: entry FILLED, vị thế mở, chưa có SL/TP. Đây là một lỗi có thể gây triệu chứng người dùng báo, chưa phải xác minh nguyên nhân chính xác trên máy người dùng vì log cũ không lưu loại ngoại lệ.
+
+Bản sửa GET cùng order ID/client ID để lấy executedQty/avgPrice khi thiếu, bằng 0 hoặc không hợp lệ; kiểm tra symbol/side/ID khớp lệnh mở. Nếu avgPrice vẫn thiếu nhưng có cumQuote và executedQty hợp lệ từ truy vấn, tính VWAP = cumQuote/executedQty. Không dùng mark hoặc price của lệnh market để giả định giá vào, không POST lại entry. Nếu vẫn thiếu, đi qua luồng đóng giảm vị thế. Bắt cả ngoại lệ chương trình trong bước đặt bảo vệ, thử đóng và chỉ tuyên bố đóng xong sau khi đã xác minh.
+
+Diagnostic chỉ lưu loại ngoại lệ, mã tham chiếu, giai đoạn và vị trí file/hàm/dòng thuộc bot; không lưu exception message, locals, stack source, khóa hoặc signed URL. Banner trên giao diện nhắc rõ paused không có nghĩa vị thế đã đóng. Fixture POST mặc định bỏ avgPrice, query trả giá để các test và browser smoke luôn đi qua đúng trường hợp này.
+
+`POST /api/{live,demo}/finish-external` với `{confirm_closed:true}` chỉ dành cho phiên paused sau khi người dùng xử lý trực tiếp trên Binance. Chỉ đọc: đối soát các ID đã biết, từ chối UNKNOWN và vị thế/lệnh còn mở toàn tài khoản, không hủy lệnh hay gửi lệnh mới. Khi trống, đánh dấu stopped + closed_externally, giữ operations/events/diagnostics; equity/net = null để không đưa ra kết quả tài chính chưa được đối soát. Khởi tạo phiên mới lưu phiên sự cố vào archive. Không tự nhận SL/TP do người dùng tạo ngoài bot, không xóa DB để bỏ qua đối soát.
+
 ## Khóa và mạng
 
 API Key/Secret là `SecretStr` tại biên API và chỉ giữ trong RAM; không nằm trong DB, export, localStorage, log hoặc Git. Lưu fingerprint SHA-256 của API Key để tránh khôi phục phiên bằng tài khoản khác. Không tự đọc khóa từ biến môi trường; khóa được gửi tới môi trường cố định tương ứng với trang người dùng chọn. URL đích cố định HTTPS, kiểm tra TLS, không theo redirect, không in URL có chữ ký. Lỗi validation bỏ trường input để tránh echo khóa. Khi bị rate limit, giữ thời gian chờ Retry-After và không retry write. Các mã Binance -1001/-1006/-1007 được coi là chưa rõ kết quả ghi, kể cả khi HTTP không phải 5xx.

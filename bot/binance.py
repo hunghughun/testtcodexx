@@ -1,5 +1,5 @@
 """Fixed-environment Futures REST adapters; no automatic write retries."""
-from decimal import Decimal, ROUND_DOWN, ROUND_UP
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
 import hashlib
 import hmac
 import json
@@ -26,7 +26,10 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def number(value):
-    result = D(str(value))
+    try:
+        result = D(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        raise ExchangeError('Sàn trả về số liệu không hợp lệ.') from None
     if not result.is_finite():
         raise ExchangeError('Sàn trả về số liệu không hợp lệ.')
     return result

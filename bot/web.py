@@ -42,6 +42,11 @@ class LiveStart(LiveConfirmation):
     config: FuturesConfig
 
 
+class ExternalClose(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    confirm_closed: Literal[True]
+
+
 def create_app(db_path=None, run_worker=True, demo_client_factory=None, live_client_factory=None):
     service = Service(db_path or os.environ.get("BOT_DB_PATH", ".runtime/bot.sqlite3"))
     demo_path = Path(service.db_path).with_name(Path(service.db_path).stem+'-demo.sqlite3')
@@ -67,9 +72,8 @@ def create_app(db_path=None, run_worker=True, demo_client_factory=None, live_cli
             while not shutdown.wait(10):
                 try:
                     exchange.tick()
-                except Exception:
-                    logging.error('Futures worker paused due to an unexpected error; no request details logged.')
-                    try: exchange.pause('Lỗi hệ thống. Đã tạm dừng; kiểm tra lệnh trên sàn rồi đối soát.')
+                except Exception as exc:
+                    try: exchange.handle_unexpected(exc,'vòng chạy nền')
                     except ExchangeError: pass
 
         demo_worker = threading.Thread(target=exchange_work, args=(demo,), daemon=True, name='binance-demo')
@@ -145,6 +149,9 @@ def create_app(db_path=None, run_worker=True, demo_client_factory=None, live_cli
     @app.post('/api/demo/stop')
     def demo_stop(): return demo.stop()
 
+    @app.post('/api/demo/finish-external')
+    def demo_finish_external(body: ExternalClose): return demo.finish_external_close(body.confirm_closed)
+
     @app.get('/demo')
     def demo_page(): return FileResponse(STATIC / 'demo.html')
 
@@ -172,9 +179,12 @@ def create_app(db_path=None, run_worker=True, demo_client_factory=None, live_cli
     @app.post('/api/live/stop')
     def live_stop(): return live.stop()
 
+    @app.post('/api/live/finish-external')
+    def live_finish_external(body: ExternalClose): return live.finish_external_close(body.confirm_closed)
+
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "app": "tradepilot", "version": "0.3",
+        return {"status": "ok", "app": "tradepilot", "version": "0.3.1",
                 "live_supported": True, "live_trading": live.s['status']=='running'}
 
     @app.get("/api/state")

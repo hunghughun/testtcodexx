@@ -20,7 +20,7 @@ def is_bot_running(url):
     try:
         with build_opener(ProxyHandler({})).open(url + "/api/health", timeout=1) as response:
             result = json.loads(response.read(4096))
-            return result.get('status')=='ok' and result.get('app')=='tradepilot' and result.get('version')=='0.3'
+            return result.get('status')=='ok' and result.get('app')=='tradepilot' and result.get('version')=='0.3.1'
     except (OSError, URLError, ValueError):
         return False
 

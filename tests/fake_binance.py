@@ -101,6 +101,9 @@ class FakeBinance:
             if entry and self.unknown_entry:raise ExchangeError('Timeout',uncertain=True)
             result=self._market(params,partial=entry and self.partial_entry)
             if entry and self.timeout_entry:raise ExchangeError('Timeout after fill',uncertain=True)
+            # The official POST /order response does not guarantee avgPrice.
+            # Query-by-ID retains it, matching the production recovery path.
+            result.pop('avgPrice',None)
             return result
         if path.endswith('/algoOrder'):
             if params['type']=='TAKE_PROFIT_MARKET':

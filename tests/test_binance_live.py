@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
@@ -154,6 +154,161 @@ class LiveServiceTests(unittest.TestCase):
         closes=[p for path,p in self.exchange.writes if path.endswith('/order') and p.get('reduceOnly')=='true']
         self.assertEqual(len(closes),1)
         self.assertFalse(self.exchange.algos())
+
+    def test_filled_post_without_average_queries_same_order_before_protection(self):
+        self.start()
+        query=self.exchange.query
+        calls=[]
+        def lookup(symbol,client_id,algo=False):
+            calls.append((symbol,client_id,algo))
+            return query(symbol,client_id,algo)
+        self.exchange.query=lookup
+        self.open()
+        entry=next(o for o in self.service.s['operations'].values() if o['kind']=='entry')
+        self.assertIn(('BTCUSDT',entry['client_id'],False),calls)
+        self.assertEqual(self.service.s['status'],'running')
+        self.assertEqual(len(self.exchange.algos()),2)
+        self.assertEqual(sum(p.endswith('/order') for p,_ in self.exchange.writes),1)
+        prices={a['type']:D(a['triggerPrice']) for a in self.exchange.algos()}
+        self.assertEqual(prices,{'STOP_MARKET':D(98),'TAKE_PROFIT_MARKET':D(104)})
+
+    def test_average_can_be_derived_only_from_queried_fill_quote_and_quantity(self):
+        self.start()
+        query=self.exchange.query
+        def no_average(symbol,client_id,algo=False):
+            result=query(symbol,client_id,algo)
+            if not algo:
+                result['cumQuote']=str(D(result['avgPrice'])*D(result['executedQty']))
+                result['avgPrice']='0'
+            return result
+        self.exchange.query=no_average
+        self.open()
+        self.assertEqual(len(self.exchange.algos()),2)
+        self.assertEqual(self.service.s['status'],'running')
+
+    def test_missing_average_after_query_closes_without_using_mark_as_entry_price(self):
+        self.start()
+        query=self.exchange.query
+        def no_average(symbol,client_id,algo=False):
+            result=query(symbol,client_id,algo)
+            if not algo:result.pop('avgPrice',None)
+            return result
+        self.exchange.query=no_average
+        with self.assertRaises(ExchangeError) as caught:self.open()
+        self.assertFalse(self.exchange.positions())
+        self.assertFalse(self.exchange.algos())
+        self.assertEqual(self.service.s['status'],'paused')
+        self.assertIn('Đã xác nhận đóng hết',str(caught.exception))
+
+    def test_unexpected_protection_error_reduces_position_and_redacts_diagnostics(self):
+        self.start()
+        secret='private-value-that-must-not-be-logged'
+        with patch.object(self.service,'_protect',side_effect=TypeError(secret)):
+            with self.assertLogs(level='ERROR') as logs:
+                with self.assertRaises(ExchangeError) as caught:self.open()
+        self.assertFalse(self.exchange.positions())
+        self.assertIn('TypeError',str(caught.exception))
+        self.assertNotIn(secret,str(caught.exception))
+        self.assertNotIn(secret,' '.join(logs.output))
+        self.assertNotIn(secret,json.dumps(self.service.snapshot()))
+        self.assertNotIn(secret.encode(),self.path.read_bytes())
+        self.assertEqual(self.service.s['diagnostics'][-1]['stage'],'đặt SL/TP sau khi khớp')
+
+    def test_failed_emergency_close_is_not_reported_as_flat(self):
+        self.start()
+        original=self.exchange.post
+        def close_rejected(path,**params):
+            if path.endswith('/order') and params.get('reduceOnly')=='true':
+                raise ExchangeError('Close rejected',code=-2022)
+            return original(path,**params)
+        self.exchange.post=close_rejected
+        with patch.object(self.service,'_protect',side_effect=KeyError('private')):
+            with self.assertLogs(level='ERROR'):
+                with self.assertRaises(ExchangeError) as caught:self.open()
+        self.assertTrue(self.exchange.positions())
+        self.assertEqual(self.service.s['status'],'paused')
+        self.assertIn('CHƯA xác nhận đóng hết',str(caught.exception))
+        self.assertNotIn('Đã xác nhận đóng hết',str(caught.exception))
+
+    def test_old_unprotected_filled_session_can_be_closed_after_restart(self):
+        self.start()
+        self.service._send('entry','BTCUSDT',{'side':'BUY','type':'MARKET','quantity':'2.5','newOrderRespType':'RESULT'})
+        self.service.pause('Old generic error')
+        self.service.close()
+        restored=LiveService(self.path,client_factory=lambda *args:self.exchange)
+        self.addCleanup(restored.close)
+        restored.connect(CREDS)
+        with self.assertRaises(ExchangeError):restored.resume(LIVE_CONFIRMATION)
+        self.assertEqual(restored.stop()['status'],'stopped')
+        self.assertFalse(self.exchange.positions())
+
+    def test_external_close_recovery_requires_flat_and_keeps_unreconciled_history(self):
+        self.start()
+        self.service._send('entry','BTCUSDT',{'side':'BUY','type':'MARKET','quantity':'2.5','newOrderRespType':'RESULT'})
+        self.service.pause('Old generic error')
+        with self.assertRaises(ExchangeError):self.service.finish_external_close(True)
+        # Operator closes directly in Binance after seeing the incident.
+        self.exchange.post('/fapi/v1/order',symbol='BTCUSDT',side='SELL',type='MARKET',quantity='2.5',
+                           reduceOnly='true',newClientOrderId='manual-exit')
+        count=len(self.exchange.writes)
+        with self.assertRaises(ExchangeError):self.service.finish_external_close()
+        state=self.service.finish_external_close(True)
+        self.assertEqual(len(self.exchange.writes),count)  # recovery is read-only
+        self.assertEqual(state['status'],'stopped')
+        self.assertTrue(state['closed_externally'])
+        self.assertIsNone(state['equity']);self.assertIsNone(state['net'])
+        self.assertEqual(len(state['operations']),1)
+        self.assertEqual(self.service.refresh()['status'],'stopped')
+        self.exchange.millis+=1000
+        self.service.start(FuturesConfig(),LIVE_CONFIRMATION)
+        with self.service.db() as db:
+            archived=json.loads(db.execute('SELECT state FROM demo_archives ORDER BY id DESC LIMIT 1').fetchone()[0])
+        self.assertTrue(archived['closed_externally'])
+        self.assertIsNone(archived['net'])
+
+    def test_external_recovery_refuses_unknown_order_even_if_account_looks_flat(self):
+        self.start();self.exchange.unknown_entry=True
+        with self.assertRaises(ExchangeError):self.open()
+        count=len(self.exchange.writes)
+        with self.assertRaises(ExchangeError):self.service.finish_external_close(True)
+        self.assertEqual(self.service.s['status'],'paused')
+        self.assertEqual(len(self.exchange.writes),count)
+
+    def test_external_recovery_api_checks_confirmation_origin_and_open_protection(self):
+        app=create_app(Path(self.temp.name)/'recovery-api.sqlite3',run_worker=False,
+                       live_client_factory=lambda *args:self.exchange)
+        with TestClient(app) as client:
+            client.post('/api/live/connect',json={'api_key':'k'*32,'api_secret':'s'*32})
+            client.post('/api/live/start',json={'config':{},'confirm_live':LIVE_CONFIRMATION})
+            live=app.state.live
+            live._send('entry','BTCUSDT',{'side':'BUY','type':'MARKET','quantity':'2.5','newOrderRespType':'RESULT'})
+            live.pause('Incident')
+            self.assertEqual(client.post('/api/live/finish-external',json={}).status_code,422)
+            self.assertEqual(client.post('/api/live/finish-external',json={'confirm_closed':False}).status_code,422)
+            self.assertEqual(client.post('/api/live/finish-external',json={'confirm_closed':True}).status_code,409)
+            self.exchange.post('/fapi/v1/order',symbol='BTCUSDT',side='SELL',type='MARKET',quantity='2.5',
+                               reduceOnly='true',newClientOrderId='manual-exit')
+            # A remaining manually placed conditional must never be ignored/canceled.
+            self.exchange.conditional['external-sl']={'clientAlgoId':'external-sl','algoStatus':'NEW'}
+            count=len(self.exchange.writes)
+            self.assertEqual(client.post('/api/live/finish-external',json={'confirm_closed':True}).status_code,409)
+            self.assertEqual(len(self.exchange.writes),count)
+            self.exchange.conditional.clear()  # operator cancels directly on exchange
+            self.assertEqual(client.post('/api/live/finish-external',json={'confirm_closed':True},
+                                         headers={'Origin':'https://bad.example'}).status_code,403)
+            result=client.post('/api/live/finish-external',json={'confirm_closed':True})
+            self.assertEqual(result.status_code,200,result.text)
+            self.assertTrue(result.json()['closed_externally'])
+            self.assertIsNone(result.json()['net'])
+
+    def test_sma_unexpected_error_pauses_and_records_safe_diagnostic(self):
+        self.start(strategy='sma')
+        self.exchange.candles=lambda symbol: (_ for _ in ()).throw(KeyError('private-secret'))
+        with self.assertLogs(level='ERROR') as logs:self.service.tick()
+        self.assertEqual(self.service.s['status'],'paused')
+        self.assertIn('KeyError',self.service.s['error'])
+        self.assertNotIn('private-secret',json.dumps(self.service.snapshot()))
+        self.assertNotIn('private-secret',' '.join(logs.output))
 
     def test_loss_exit_not_blocked_by_delayed_fill_history(self):
         self.start(max_loss=5)

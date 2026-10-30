@@ -30,6 +30,12 @@ Hướng dẫn đầy đủ, không cần biết code: [bot/static/huong-dan-liv
 
 Mặc định vẫn là thủ công; kết nối không bật tự động. Khóa chỉ ở RAM, không dùng lại khóa Demo. Tiền thật lưu riêng `.runtime/bot-live.sqlite3` (hoặc hậu tố `-live` với `BOT_DB_PATH` khác), có khóa hệ điều hành chống hai tiến trình cùng DB. Không chạy nhiều máy/bản bot khác thư mục trên cùng tài khoản. Khởi động lại chuyển phiên sang tạm dừng, cần nhập lại cùng khóa để đối soát/tiếp tục hoặc đóng. Mục tiêu tăng 500 thành 1.000 USDT và ngưỡng lỗ không được bảo đảm. Bot không nạp/rút tiền; mức vốn là ngân sách phần mềm, không tạo ví độc lập trên Binance.
 
+## Cập nhật 0.3.1 — lỗi sau khi lệnh đã khớp
+
+Đã sửa trường hợp phản hồi mở lệnh không có `avgPrice`: bot tra cứu lại cùng lệnh để đặt SL/TP, không gửi trùng entry. Nếu không xác nhận được bảo vệ, thử đóng giảm vị thế và báo rõ có xác nhận đóng hết hay chưa. Banner lỗi hiển thị ngay đầu trang, log mới có mã chẩn đoán không chứa khóa/URL ký.
+
+Nếu phiên cũ bị tạm dừng sau FILLED, kiểm tra vị thế/TP-SL trực tiếp trên Binance trước khi cập nhật. Khi đã đóng trực tiếp trên sàn, bản mới có nút **Xác nhận đã đóng trên Binance** để kiểm tra tài khoản trống và kết thúc phiên, giữ lịch sử, không đoán lãi/lỗ cuối. Giữ `.runtime`, kết nối lại cùng khóa; không bấm tiếp tục khi bảo vệ của bot chưa rõ. Xem hướng dẫn sự cố trong trang **Hướng dẫn tiền thật**.
+
 ## Dùng Binance Demo
 
 Sau khi mở ứng dụng, chọn **Binance Demo** → nhập khóa HMAC Demo → **Kiểm tra kết nối** (chỉ đọc). Dùng tài khoản Demo riêng không có lệnh/vị thế, One-way và Single-Asset USDT, tắt trả phí Futures bằng BNB. Chọn **kiểm tra thủ công** để thử Long/Short hoặc **tự động SMA 5/15** để bot chờ tín hiệu nến đóng. Bấm **Bắt đầu phiên Demo** trước khi gửi lệnh.
