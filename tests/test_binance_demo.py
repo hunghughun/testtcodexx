@@ -70,6 +70,42 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual((sl,tp),(D('99.0'),D('105.0')))
         with self.assertRaises(ExchangeError):rules.quantity(D('.01'),1,D(100))
 
+    def test_quantity_errors_show_exchange_limits_and_actual_sizing(self):
+        info=FakeBinance().exchange_info()['symbols'][0]
+        rules=SymbolRules(info)
+        with self.assertRaises(ExchangeError) as caught:
+            rules.quantity(D('5'),5,D('100000'))
+        message=str(caught.exception)
+        self.assertIn('BTCUSDT: Số lượng sau làm tròn nhỏ hơn tối thiểu',message)
+        self.assertIn('5 USDT × 5x / giá mark 100000 USDT = 0.00025 BTC',message)
+        self.assertIn('sau làm tròn xuống còn 0.000 BTC',message)
+        self.assertIn('tối thiểu 0.001, tối đa 1000, bước 0.001 BTC',message)
+        self.assertIn('giá trị lệnh tối thiểu: 5 USDT',message)
+        # Fixture values are deliberately changed: the message must follow
+        # Binance filters rather than a remembered minimum for BTC.
+        info['filters'][1]['maxQty']='0.002'
+        rules=SymbolRules(info)
+        with self.assertRaises(ExchangeError) as caught:
+            rules.quantity(D('100'),5,D('100000'))
+        self.assertIn('vượt tối đa',str(caught.exception))
+        self.assertIn('MARKET_LOT_SIZE: tối thiểu 0.001, tối đa 0.002',str(caught.exception))
+
+    def test_step_and_notional_errors_distinguish_the_reason(self):
+        info=FakeBinance().exchange_info()['symbols'][0]
+        info['filters'][0]['stepSize']='0.002'
+        rules=SymbolRules(info)
+        with self.assertRaises(ExchangeError) as caught:
+            rules.quantity(D('60'),5,D('100000'))
+        self.assertIn('không khớp bước',str(caught.exception))
+        info['filters'][0]['stepSize']='0.001'
+        info['filters'][3]['notional']='150'
+        rules=SymbolRules(info)
+        with self.assertRaises(ExchangeError) as caught:
+            rules.quantity(D('25'),5,D('100000'))
+        self.assertIn('Giá trị lệnh nhỏ hơn mức tối thiểu',str(caught.exception))
+        self.assertIn('Giá trị lệnh sau làm tròn: 100.000 USDT',str(caught.exception))
+        self.assertIn('giá trị lệnh tối thiểu: 150 USDT',str(caught.exception))
+
 
 class DemoServiceTests(unittest.TestCase):
     def setUp(self):

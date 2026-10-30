@@ -163,6 +163,8 @@ class SymbolRules:
         if info.get('status') != 'TRADING' or info.get('quoteAsset') != 'USDT' or info.get('contractType') != 'PERPETUAL':
             raise ExchangeError('Chỉ hỗ trợ hợp đồng USDT PERPETUAL đang giao dịch.')
         filters = {f['filterType']:f for f in info['filters']}
+        self.symbol = info['symbol']
+        self.base_asset = info.get('baseAsset', self.symbol.removesuffix('USDT'))
         self.lot = filters['LOT_SIZE']
         self.market = filters.get('MARKET_LOT_SIZE', self.lot)
         self.price = filters['PRICE_FILTER']
@@ -172,14 +174,35 @@ class SymbolRules:
         notional = filters.get('MIN_NOTIONAL', filters.get('NOTIONAL', {}))
         self.min_notional = number(notional.get('notional', notional.get('minNotional', 0)))
 
+    def quantity_error(self, reason, budget, leverage, mark, raw_qty, qty):
+        # These are the exchangeInfo filters loaded for this session, never
+        # hard-coded BTC limits. Show sizing inputs without any account secrets.
+        details = []
+        for label, rule in [('LOT_SIZE', self.lot), ('MARKET_LOT_SIZE', self.market)]:
+            details.append(f"{label}: tối thiểu {rule['minQty']}, tối đa {rule['maxQty']}, bước {rule['stepSize']} {self.base_asset}")
+        return ExchangeError(
+            f'{self.symbol}: {reason}. '
+            f'Ký quỹ {decimal_text(budget)} USDT × {leverage}x / giá mark {decimal_text(mark)} USDT '
+            f'= {decimal_text(raw_qty)} {self.base_asset}; sau làm tròn xuống còn {decimal_text(qty)} {self.base_asset}. '
+            + '; '.join(details) + '. '
+            f'Giá trị lệnh sau làm tròn: {decimal_text(qty*mark)} USDT; '
+            f'giá trị lệnh tối thiểu: {decimal_text(self.min_notional)} USDT. '
+            'Đây là giới hạn số lượng/giá trị vị thế, không phải số dư ví. Chưa gửi lệnh; bot không tự tăng ký quỹ.'
+        )
+
     def quantity(self, budget, leverage, mark):
-        qty = rounded(budget * leverage / mark, self.step)
+        raw_qty = budget * leverage / mark
+        qty = rounded(raw_qty, self.step)
         for rule in [self.lot, self.market]:
             step = number(rule['stepSize'])
-            if qty < number(rule['minQty']) or qty > number(rule['maxQty']) or (step and qty % step):
-                raise ExchangeError('Ký quỹ mỗi lệnh không phù hợp bước/min/max số lượng của cặp này.')
+            if qty < number(rule['minQty']):
+                raise self.quantity_error('Số lượng sau làm tròn nhỏ hơn tối thiểu', budget, leverage, mark, raw_qty, qty)
+            if qty > number(rule['maxQty']):
+                raise self.quantity_error('Số lượng sau làm tròn vượt tối đa', budget, leverage, mark, raw_qty, qty)
+            if step and qty % step:
+                raise self.quantity_error('Số lượng không khớp bước Binance cho phép', budget, leverage, mark, raw_qty, qty)
         if qty <= 0 or qty*mark < self.min_notional:
-            raise ExchangeError('Giá trị lệnh nhỏ hơn mức tối thiểu của Binance.')
+            raise self.quantity_error('Giá trị lệnh nhỏ hơn mức tối thiểu', budget, leverage, mark, raw_qty, qty)
         return qty
 
     def triggers(self, entry, side, stop_pct, take_pct):
